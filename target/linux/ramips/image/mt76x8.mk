@@ -265,7 +265,7 @@ endef
 TARGET_DEVICES += tl-wr840n-v6
 
 define Device/tl-wr840n-v6-8m
-  $(Device/tplink)
+  $(Device/tl-wr840n-v6)
   DTS := TL-WR840NV6-8M
   IMAGE_SIZE := 8068k
   DEVICE_TITLE := TP-Link TL-WR840N v6 8M
