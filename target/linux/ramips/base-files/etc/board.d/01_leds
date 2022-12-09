@@ -128,6 +128,11 @@ wt1520-8M|\
 zyxel,keenetic-start)
 	set_wifi_led "rt2800pci-phy0::radio"
 	;;
+tplink,tl-wr840n-v6.2)
+	ucidef_set_led_netdev "wlan2g" "wlan2g" "$boardname:green:wlan" "wlan0" "tx rx"
+	ucidef_set_led_switch "lan" "lan" "$boardname:green:lan" "switch0" "0x1e"
+	ucidef_set_led_switch "wan" "wan" "$boardname:green:wan" "switch0" "0x1"
+	;;
 dir-620-d1|\
 dlink,dwr-116-a1|\
 head-weblink,hdrm200|\
