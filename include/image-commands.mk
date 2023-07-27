@@ -2,6 +2,7 @@
 
 IMAGE_KERNEL = $(word 1,$^)
 IMAGE_ROOTFS = $(word 2,$^)
+BOOTLOADER :=
 
 define ModelNameLimit16
 $(shell printf %.16s "$(word 2, $(subst _, ,$(1)))")
@@ -423,8 +424,6 @@ define Build/netgear-encrypted-factory
 		--output-file $@ \
 		--model $(NETGEAR_ENC_MODEL) \
 		--region $(NETGEAR_ENC_REGION) \
-		$(if $(NETGEAR_ENC_HW_ID_LIST),--hw-id-list "$(NETGEAR_ENC_HW_ID_LIST)") \
-		$(if $(NETGEAR_ENC_MODEL_LIST),--model-list "$(NETGEAR_ENC_MODEL_LIST)") \
 		--version V1.0.0.0.$(shell cat $(VERSION_DIST)| sed -e 's/[[:space:]]/-/g').$(firstword $(subst -, ,$(REVISION))) \
 		--encryption-block-size 0x20000 \
 		--openssl-bin "$(STAGING_DIR_HOST)/bin/openssl" \
@@ -524,10 +523,12 @@ define Build/sysupgrade-tar
 endef
 
 define Build/tplink-safeloader
+	$(call Build/get-bootloader,$(BOOTL_LIST),$(TPLINK_BOARD_ID),$(BOOTL_FACTORY))
 	-$(STAGING_DIR_HOST)/bin/tplink-safeloader \
 		-B $(TPLINK_BOARD_ID) \
 		-V $(REVISION) \
 		-k $(IMAGE_KERNEL) \
+		-u $(BOOTLOADER) \
 		-r $@ \
 		-o $@.new \
 		-j \
@@ -587,7 +588,7 @@ define Build/uImage
 	mkimage \
 		-A $(LINUX_KARCH) \
 		-O linux \
-		-T kernel \
+		-T $(if $(IMAGE_TYPE),$(IMAGE_TYPE),kernel) \
 		-C $(word 1,$(1)) \
 		-a $(KERNEL_LOADADDR) \
 		-e $(if $(KERNEL_ENTRY),$(KERNEL_ENTRY),$(KERNEL_LOADADDR)) \
@@ -624,4 +625,12 @@ define Build/zyxel-ras-image
 			-o $@.new \
 			$(if $(findstring separate-kernel,$(word 1,$(1))),-k $(IMAGE_KERNEL)) \
 		&& mv $@.new $@
+endef
+
+define Build/get-bootloader
+	$(eval GET_LINK := $(shell wget -qO- $(1) | grep -o '"$(2)-$(3)" *: *{[^}]*}' | grep -o '"DOWNLOAD_LINK" *: *"[^"]*"' | cut -d '"' -f 4))
+	$(eval GET_HASH := $(shell wget -qO- $(1) | grep -o '"$(2)-$(3)" *: *{[^}]*}' | grep -o '"SHA256SUM" *: *"[^"]*"' | cut -d '"' -f 4))
+	$(shell wget -O $(KERNEL_BUILD_DIR)/$(2)_bootloader.bin $(GET_LINK))
+	$(eval FILE_HASH := $(shell sha256sum $(KERNEL_BUILD_DIR)/$(2)_bootloader.bin | cut -d' ' -f1))
+	$(if $(filter $(GET_HASH),$(FILE_HASH)),@$(eval BOOTLOADER := $(realpath $(KERNEL_BUILD_DIR)/$(2)_bootloader.bin)),@rm -f $(2)_bootloader.bin)
 endef
