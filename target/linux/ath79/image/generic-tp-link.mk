@@ -906,6 +906,19 @@ define Device/tplink_tl-wr941hp-v1
 endef
 TARGET_DEVICES += tplink_tl-wr941hp-v1
 
+define Device/tplink_tl-wr941hp-v2
+  $(Device/tplink-safeloader-uimage)
+  SOC := tp9343
+  DEVICE_MODEL := TL-WR941HP
+  DEVICE_VARIANT := v2
+  TPLINK_BOARD_ID := TL-WR941HP-V2
+  BOOTL_LIST := https://raw.githubusercontent.com/FabianoTSS/bootloaders/main/bootloader_list.json
+  BOOTL_FACTORY := CUSTOM
+  IMAGE_TYPE := multi
+  IMAGE_SIZE := 8000k
+endef
+TARGET_DEVICES += tplink_tl-wr941hp-v2
+
 define Device/tplink_wbs210-v1
   $(Device/tplink-safeloader-okli)
   SOC := ar9344

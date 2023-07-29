@@ -1,0 +1,185 @@
+Index: firmware-utils-2023-06-29-9e2de851/src/tplink-safeloader.c
+===================================================================
+--- firmware-utils-2023-06-29-9e2de851.orig/src/tplink-safeloader.c
++++ firmware-utils-2023-06-29-9e2de851/src/tplink-safeloader.c
+@@ -57,6 +57,7 @@ struct flash_partition_entry {
+ struct factory_partition_names {
+ 	const char *partition_table;
+ 	const char *soft_ver;
++	const char *fs_uboot;
+ 	const char *os_image;
+ 	const char *support_list;
+ 	const char *file_system;
+@@ -2591,6 +2592,40 @@ static struct device_info boards[] = {
+ 		.last_sysupgrade_partition = "file-system",
+ 	},
+ 
++	/** Firmware layout for the TL-WR941HP v2 */
++	{
++		.id     = "TL-WR941HP-V2",
++		.vendor = "",
++		.support_list =
++			"SupportList:\n"
++			"{product_name:TL-WR941HP,product_ver:2.0.0,special_id:42520000}\n",
++		.part_trail = 0x00,
++		.soft_ver = SOFT_VER_DEFAULT,
++
++		.partitions = {
++			{"fs-uboot", 0x00000, 0x10000},
++			{"firmware", 0x10000, 0x7d0000},
++			{"default-mac", 0x7e0000, 0x00020},
++			{"pin", 0x7e0020, 0x00010},
++			{"support-list", 0x7e0030, 0x0006c},
++			{"rf-test", 0x7e009c, 0x00004},
++			{"soft-version", 0x7e00a0, 0x00200},
++			{"product-info", 0x7e02a0, 0x002a0},
++			{"partition-table", 0x7e0540, 0x00f00},
++			{"device-id", 0x7e1440, 0x00100},
++			{"profile", 0x7e1540, 0x00ac0},
++			{"default-config", 0x7e2000, 0x02000},
++			{"user-config", 0x7e4000, 0x04000},
++			{"certificate", 0x7e8000, 0x04000},
++			{"qos-db", 0x7ec000, 0x04000},
++			{"radio", 0x7f0000, 0x10000},
++			{NULL, 0, 0}
++		},
++
++		.first_sysupgrade_partition = "os-image",
++		.last_sysupgrade_partition = "file-system",
++	},
++
+ 	/** Firmware layout for the TL-WR942N V1 */
+ 	{
+ 		.id     = "TLWR942NV1",
+@@ -3369,6 +3404,8 @@ static void set_partition_names(struct d
+ 		info->partition_names.partition_table = "partition-table";
+ 	if (!info->partition_names.soft_ver)
+ 		info->partition_names.soft_ver = "soft-version";
++	if (!info->partition_names.fs_uboot)
++		info->partition_names.fs_uboot = "fs-uboot";
+ 	if (!info->partition_names.os_image)
+ 		info->partition_names.os_image = "os-image";
+ 	if (!info->partition_names.support_list)
+@@ -3716,7 +3753,8 @@ static void * generate_sysupgrade_image(
+ 
+ /** Generates an image according to a given layout and writes it to a file */
+ static void build_image(const char *output,
+-		const char *kernel_image,
++		const char *uboot_image,
++        const char *kernel_image,
+ 		const char *rootfs_image,
+ 		uint32_t rev,
+ 		bool add_jffs2_eof,
+@@ -3725,8 +3763,9 @@ static void build_image(const char *outp
+ 
+ 	size_t i;
+ 
+-	struct image_partition_entry parts[7] = {};
++	struct image_partition_entry parts[8] = {};
+ 
++    struct flash_partition_entry *uboot_partition = NULL;
+ 	struct flash_partition_entry *firmware_partition = NULL;
+ 	struct flash_partition_entry *os_image_partition = NULL;
+ 	struct flash_partition_entry *file_system_partition = NULL;
+@@ -3763,7 +3802,8 @@ static void build_image(const char *outp
+ 
+ 		/* Align partition start to erase blocks for factory images only */
+ 		if (!sysupgrade)
+-			file_system_partition->base = ALIGN(firmware_partition->base + kernel.st_size, 0x10000);
++		
++		file_system_partition->base = ALIGN(firmware_partition->base + kernel.st_size, 0x10000);
+ 
+ 		file_system_partition->size = firmware_partition->size - file_system_partition->base;
+ 
+@@ -3775,8 +3815,15 @@ static void build_image(const char *outp
+ 	parts[0] = make_partition_table(info);
+ 	parts[1] = make_soft_version(info, rev);
+ 	parts[2] = make_support_list(info);
+-	parts[3] = read_file(info->partition_names.os_image, kernel_image, false, NULL);
+-	parts[4] = read_file(info->partition_names.file_system, rootfs_image, add_jffs2_eof, file_system_partition);
++	size_t uboot_index = 0;
++	
++	if (uboot_image){
++		parts[3] = read_file(info->partition_names.fs_uboot, uboot_image, false, NULL);
++		uboot_index = 1;
++	}
++
++    parts[3+uboot_index] = read_file(info->partition_names.os_image, kernel_image, false, NULL);
++	parts[4+uboot_index] = read_file(info->partition_names.file_system, rootfs_image, add_jffs2_eof, file_system_partition);
+ 
+ 
+ 	/* Some devices need the extra-para partition to accept the firmware */
+@@ -3797,17 +3844,17 @@ static void build_image(const char *outp
+ 	    strcasecmp(info->id, "MR70X") == 0 ||
+ 	    strcasecmp(info->id, "TLWR1043NV5") == 0) {
+ 		const uint8_t extra_para[2] = {0x01, 0x00};
+-		parts[5] = make_extra_para(info, extra_para,
++		parts[5+uboot_index] = make_extra_para(info, extra_para,
+ 			sizeof(extra_para));
+ 	} else if (strcasecmp(info->id, "ARCHER-C6-V2") == 0 ||
+ 		   strcasecmp(info->id, "TL-WA1201-V2") == 0) {
+ 		const uint8_t extra_para[2] = {0x00, 0x01};
+-		parts[5] = make_extra_para(info, extra_para,
++		parts[5+uboot_index] = make_extra_para(info, extra_para,
+ 			sizeof(extra_para));
+ 	} else if (strcasecmp(info->id, "ARCHER-C6-V2-US") == 0 ||
+ 		   strcasecmp(info->id, "EAP245-V3") == 0) {
+ 		const uint8_t extra_para[2] = {0x01, 0x01};
+-		parts[5] = make_extra_para(info, extra_para,
++		parts[5+uboot_index] = make_extra_para(info, extra_para,
+ 			sizeof(extra_para));
+ 	}
+ 
+@@ -3844,8 +3891,9 @@ static void usage(const char *argv0) {
+ 		"Info about an image:\n"
+ 		"  -i <file>       input file to read from\n"
+ 		"Create a new image:\n"
+-		"  -B <board>      create image for the board specified with <board>\n"
+-		"  -k <file>       read kernel image from the file <file>\n"
++		"  -B <board>      create image for the board specified with <board>\n"		
++        "  -u <file>       read u-boot image from the file (optional)<file>\n"
++        "  -k <file>       read kernel image from the file <file>\n"
+ 		"  -r <file>       read rootfs image from the file <file>\n"
+ 		"  -o <file>       write output to the file <file>\n"
+ 		"  -V <rev>        sets the revision number to <rev>\n"
+@@ -4352,7 +4400,7 @@ static void convert_firmware(const char
+ }
+ 
+ int main(int argc, char *argv[]) {
+-	const char *info_image = NULL, *board = NULL, *kernel_image = NULL, *rootfs_image = NULL, *output = NULL;
++	const char *info_image = NULL, *board = NULL, *uboot_image = NULL, *kernel_image = NULL, *rootfs_image = NULL, *output = NULL;
+ 	const char *extract_image = NULL, *output_directory = NULL, *convert_image = NULL;
+ 	bool add_jffs2_eof = false, sysupgrade = false;
+ 	unsigned rev = 0;
+@@ -4362,7 +4410,7 @@ int main(int argc, char *argv[]) {
+ 	while (true) {
+ 		int c;
+ 
+-		c = getopt(argc, argv, "i:B:k:r:o:V:jSh:x:d:z:");
++		c = getopt(argc, argv, "i:B:u:k:r:o:V:jSh:x:d:z:");
+ 		if (c == -1)
+ 			break;
+ 
+@@ -4374,6 +4422,10 @@ int main(int argc, char *argv[]) {
+ 		case 'B':
+ 			board = optarg;
+ 			break;
++        	
++        case 'u':
++			uboot_image = optarg;
++			break;
+ 
+ 		case 'k':
+ 			kernel_image = optarg;
+@@ -4447,8 +4499,10 @@ int main(int argc, char *argv[]) {
+ 
+ 		if (info == NULL)
+ 			error(1, 0, "unsupported board %s", board);
++        
++		build_image(output, uboot_image, kernel_image, rootfs_image, rev, add_jffs2_eof, sysupgrade, info);
+ 
+-		build_image(output, kernel_image, rootfs_image, rev, add_jffs2_eof, sysupgrade, info);
++		
+ 	}
+ 
+ 	return 0;

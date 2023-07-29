@@ -1,0 +1,14 @@
+Index: firmware-utils-2023-06-29-9e2de851/src/tplink-safeloader.c
+===================================================================
+--- firmware-utils-2023-06-29-9e2de851.orig/src/tplink-safeloader.c
++++ firmware-utils-2023-06-29-9e2de851/src/tplink-safeloader.c
+@@ -2604,7 +2604,8 @@ static struct device_info boards[] = {
+ 
+ 		.partitions = {
+ 			{"fs-uboot", 0x00000, 0x10000},
+-			{"firmware", 0x10000, 0x7d0000},
++			{"os-image", 0x10000, 0x240000},
++			{"file-system", 0x250000, 0x580000},
+ 			{"default-mac", 0x7e0000, 0x00020},
+ 			{"pin", 0x7e0020, 0x00010},
+ 			{"support-list", 0x7e0030, 0x0006c},
