@@ -133,6 +133,13 @@ define Build/append-md5sum-ascii-salted
 	rm $@.salted
 endef
 
+define Build/append-itb-magic
+	echo -n $(1) | awk '{ gsub(/../,"\\\\x&"); print }' | xargs printf | cat - $@ > $@.tmp
+    mv $@.tmp $@
+	md5sum $@ | awk '{ print $$1 }' | awk '{ gsub(/../,"\\\\x&"); print }' | xargs printf | cat - $@ > $@.tmp
+    mv $@.tmp $@
+endef
+
 define Build/append-ubi
 	sh $(TOPDIR)/scripts/ubinize-image.sh \
 		$(if $(UBOOTENV_IN_UBI),--uboot-env) \

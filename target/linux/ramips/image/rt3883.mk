@@ -76,6 +76,19 @@ define Device/loewe_wmdr-143n
 endef
 TARGET_DEVICES += loewe_wmdr-143n
 
+define Device/intelbras_ap-300
+  SOC := rt3662
+  IMAGE_SIZE := 7872k
+  IMAGES += factory.bin
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | \
+	append-itb-magic D80DB2A1
+  DEVICE_VENDOR := Intelbras
+  DEVICE_MODEL := AP-300
+  SUPPORTED_DEVICES += ap-300
+  DEFAULT := n
+endef
+TARGET_DEVICES += intelbras_ap-300
+
 define Device/omnima_hpm
   SOC := rt3662
   IMAGE_SIZE := 16064k
