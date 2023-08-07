@@ -871,6 +871,16 @@ define Device/tplink_tl-wr842n-v2
 endef
 TARGET_DEVICES += tplink_tl-wr842n-v2
 
+define Device/intelbras_apc-5a-20-321b9c
+  SOC := ar9342
+  IMAGE_SIZE := 15360k
+  DEVICE_MODEL := APC-5A-20-321B9C
+  KERNEL := kernel-bin | append-dtb | lzma
+  KERNEL_INITRAMFS := kernel-bin | append-dtb | lzma | uImage lzma
+  IMAGE/sysupgrade.bin := append-kernel | append-rootfs | append-metadata
+endef
+TARGET_DEVICES += intelbras_apc-5a-20-321b9c
+
 define Device/tplink_tl-wr842n-v3
   $(Device/tplink-16mlzma)
   SOC := qca9533
@@ -905,6 +915,25 @@ define Device/tplink_tl-wr941hp-v1
   IMAGE_SIZE := 7360k
 endef
 TARGET_DEVICES += tplink_tl-wr941hp-v1
+
+define Device/tplink_tl-wr941hp-v2
+  $(Device/tplink-safeloader-uimage)
+  SOC := tp9343
+  DEVICE_MODEL := TL-WR941HP
+  DEVICE_VARIANT := v2
+  TPLINK_BOARD_ID := TL-WR941HP-V2
+  BOOTL_LIST := https://raw.githubusercontent.com/FabianoTSS/bootloaders/main/bootloader_list.json
+  BOOTL_FACTORY := CUSTOM
+  IMAGE_TYPE := multi
+  IMAGE_SIZE := 8000k
+  KERNEL_SIZE := 2816k
+  KERNEL := kernel-bin | append-dtb | lzma | uImage lzma
+  KERNEL_INITRAMFS := $$(KERNEL)
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-rootfs |\
+	pad-rootfs | check-size | append-metadata
+  IMAGE/factory.bin := append-rootfs | tplink-safeloader factory
+endef
+TARGET_DEVICES += tplink_tl-wr941hp-v2
 
 define Device/tplink_wbs210-v1
   $(Device/tplink-safeloader-okli)
