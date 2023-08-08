@@ -8,6 +8,49 @@
 / {
 	compatible = "intelbras,apc-5a-20-321b9c", "qca,ar9342";
 	model = "Intelbras APC-5A-20-321B9C";
+
+	aliases {
+		led-boot = &power_led;
+		led-failsafe = &power_led;
+		led-running = &power_led;
+		led-upgrade = &power_led;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+		
+		power_led: power {
+			label = "green:power";
+			gpios = <&gpio 13 GPIO_ACTIVE_LOW>;
+			default-state = "on";
+		};
+
+		lan {
+			label = "green:lan";
+			gpios = <&gpio 4 GPIO_ACTIVE_LOW>;
+		};
+
+		rssi0 {
+			label = "yellow:rssi0";
+			gpios = <&gpio 3 GPIO_ACTIVE_LOW>;
+		};
+
+		rssi1{
+			label = "yellow:rssi1";
+			gpios = <&gpio 2 GPIO_ACTIVE_LOW>;
+		};
+
+		rssi2{
+			label = "yellow:rssi2";
+			gpios = <&gpio 1 GPIO_ACTIVE_LOW>;
+		};
+
+		rssi3{
+			label = "yellow:rssi3";
+			gpios = <&gpio 0 GPIO_ACTIVE_LOW>;
+		};
+
+	};
 };
 
 &spi {
@@ -62,16 +105,16 @@
 				#address-cells = <1>;
 				#size-cells = <1>;
 
+				cal_art_1000: cal@1000 {
+					reg = <0x1000 0x440>;
+				};
+
 				macaddr_art_0: macaddr@0 {
 					reg = <0x0 0x6>;
 				};
 
-				calibration_art_1000: calibration@1000 {
-					reg = <0x1000 0x440>;
-				};
-
-				calibration_art_5000: calibration@5000 {
-					reg = <0x5000 0x844>;
+				macaddr_art_1002: macaddr@1002 {
+					reg = <0x1002 0x6>;
 				};
 			};
 		};
@@ -82,22 +125,11 @@
 	clock-frequency = <40000000>;
 };
 
-&pcie {
-	status = "okay";
-
-	wifi@0,0 {
-		compatible = "qcom,ath10k";
-		reg = <0x0 0 0 0 0>;
-		nvmem-cells = <&calibration_art_5000>;
-		nvmem-cell-names = "calibration";
-	};
-};
-
 &mdio0 {
 	status = "okay";
 
 	phy0: ethernet-phy@0 {
-		phy-mode = "rgmii";
+		phy-mode = "mii";
 		reg = <0>;
 
 		qca,ar8327-initvals = <
@@ -110,23 +142,14 @@
 &eth0 {
 	status = "okay";
 
-	/* default for ar934x, except for 1000M and 10M */
-	pll-data = <0x06000000 0x00000101 0x00001313>;
-
 	nvmem-cells = <&macaddr_art_0>;
 	nvmem-cell-names = "mac-address";
-
-	phy-mode = "rgmii";
 	phy-handle = <&phy0>;
-
-	gmac-config {
-		device = <&gmac>;
-	};
 };
 
 &wmac {
 	status = "okay";
 
-	nvmem-cells = <&calibration_art_1000>;
-	nvmem-cell-names = "calibration";
+	nvmem-cells = <&cal_art_1000>, <&macaddr_art_1002>;
+	nvmem-cell-names = "calibration", "mac-address";
 };
