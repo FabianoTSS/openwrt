@@ -31,6 +31,7 @@ ramips_setup_interfaces()
 		ucidef_add_switch "switch0" \
 			"1:lan" "2:lan" "3:lan" "4:lan" "5:wan" "0@eth0"
 		;;
+	intelbras,ap-300|\
 	loewe,wmdr-143n|\
 	omnima,hpm)
 		ucidef_set_interface_lan "eth0"

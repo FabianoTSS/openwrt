@@ -134,3 +134,15 @@ define Device/trendnet_tew-692gr
   SUPPORTED_DEVICES += tew-692gr
 endef
 TARGET_DEVICES += trendnet_tew-692gr
+
+define Device/intelbras_ap-300
+  SOC := rt3662
+  IMAGE_SIZE := 7872k
+  KERNEL := kernel-bin | append-dtb | gzip | uImage gzip
+  IMAGES += factory.bin
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | itb-magic-header D80DB2A1
+  DEVICE_VENDOR := Intelbras
+  DEVICE_MODEL := AP-300
+  SUPPORTED_DEVICES += ap-300
+endef
+TARGET_DEVICES += intelbras_ap-300

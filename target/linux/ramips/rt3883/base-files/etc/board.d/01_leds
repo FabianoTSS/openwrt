@@ -13,6 +13,11 @@ belkin,f9k1109v1)
 edimax,br-6475nd)
 	ucidef_set_led_netdev "wifi_led" "wifi" "amber:wlan" "wlan0"
 	;;
+intelbras,ap-300)
+	ucidef_set_led_netdev "wlan" "wlan" "blue:wlan" "wlan0" "tx rx"
+	ucidef_set_led_netdev "lan" "lan" "green:power" "eth0" "tx rx"
+	ucidef_set_led_netdev "wan" "wan" "red:wan" "eth1" "tx rx"
+	;;
 omnima,hpm)
 	ucidef_set_led_netdev "eth" "ETH" "green:eth" "eth0"
 	ucidef_set_led_netdev "wifi_led" "wifi" "green:wifi" "wlan0"
