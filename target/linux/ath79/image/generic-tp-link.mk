@@ -1,5 +1,21 @@
 include ./common-tp-link.mk
 
+define Device/intelbras_apc-5a-20-321b9c
+  SOC := ar9342
+  IMAGE_SIZE := 15360k
+  DEVICE_VENDOR := Intelbras
+  DEVICE_MODEL := APC 5A-15
+  DEVICE_PACKAGES := rssileds
+  KERNEL := kernel-bin | append-dtb | lzma
+  IMAGES += factory.bin
+  KERNEL_INITRAMFS := kernel-bin | append-dtb | lzma | uImage lzma
+  KERNEL_LOADADDR := 0x80002000
+  KERNEL_ENTRY := 0x80221eb0
+  IMAGE/sysupgrade.bin := kernel-bin | append-dtb | lzma | append-rootfs | uImage lzma | append-metadata
+  IMAGE/factory.bin := kernel-bin | append-dtb | lzma | append-rootfs | uImage lzma
+endef
+TARGET_DEVICES += intelbras_apc-5a-20-321b9c
+
 define Device/tplink_archer-a7-v5
   $(Device/tplink-safeloader-uimage)
   SOC := qca9563
@@ -870,17 +886,6 @@ define Device/tplink_tl-wr842n-v2
   DEFAULT := n
 endef
 TARGET_DEVICES += tplink_tl-wr842n-v2
-
-define Device/intelbras_apc-5a-20-321b9c
-  SOC := ar9342
-  IMAGE_SIZE := 15360k
-  DEVICE_MODEL := APC-5A-20-321B9C
-  DEVICE_PACKAGES := rssileds
-  KERNEL := kernel-bin | append-dtb | lzma
-  KERNEL_INITRAMFS := kernel-bin | append-dtb | lzma | uImage lzma
-  IMAGE/sysupgrade.bin := append-kernel | append-rootfs | append-metadata
-endef
-TARGET_DEVICES += intelbras_apc-5a-20-321b9c
 
 define Device/tplink_tl-wr842n-v3
   $(Device/tplink-16mlzma)
