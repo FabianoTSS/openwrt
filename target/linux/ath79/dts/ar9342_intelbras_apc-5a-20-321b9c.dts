@@ -57,9 +57,10 @@
 	status = "okay";
     
 	flash@0 {
-		compatible = "jedec,spi-nor";
+		compatible = "mx25l6405d","jedec,spi-nor";
 		reg = <0>;
 		spi-max-frequency = <25000000>;
+		linux,modalias = "m25p80", "mx25l1606e", "n25q128a11";
 
 		partitions {
 			compatible = "fixed-partitions";

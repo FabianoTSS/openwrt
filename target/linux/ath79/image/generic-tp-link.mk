@@ -9,8 +9,6 @@ define Device/intelbras_apc-5a-20-321b9c
   KERNEL := kernel-bin | append-dtb | lzma
   IMAGES += factory.bin
   KERNEL_INITRAMFS := kernel-bin | append-dtb | lzma | uImage lzma
-  KERNEL_LOADADDR := 0x80002000
-  KERNEL_ENTRY := 0x80221eb0
   IMAGE/sysupgrade.bin := kernel-bin | append-dtb | lzma | append-rootfs | uImage lzma | append-metadata
   IMAGE/factory.bin := kernel-bin | append-dtb | lzma | append-rootfs | uImage lzma
 endef
