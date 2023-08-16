@@ -245,6 +245,7 @@ ramips_setup_interfaces()
 	tplink,tl-wr842n-v5|\
 	tl-wr840n-v4|\
 	tl-wr840n-v5|\
+	tl-wr849n-v5|\
 	tplink,tl-wr840n-v6|\
 	tplink,tl-wr840n-v6-8m|\
 	tplink,tl-wr840n-v6.2|\
