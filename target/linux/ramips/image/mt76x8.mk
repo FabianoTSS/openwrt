@@ -686,6 +686,20 @@ define Device/tplink_tl-wr840n-v5
 endef
 TARGET_DEVICES += tplink_tl-wr840n-v5
 
+define Device/tplink_tl-wr849n-v5
+  $(Device/tplink-v2)
+  IMAGE_SIZE := 7808k
+  DEVICE_MODEL := TL-WR849N
+  DEVICE_VARIANT := v5
+  TPLINK_FLASHLAYOUT := 8Mmtk
+  TPLINK_HWID := 0x08400005
+  TPLINK_HWREVADD := 0x5
+  IMAGES := sysupgrade.bin
+  SUPPORTED_DEVICES += tl-wr849n-v5
+  DEFAULT := n
+endef
+TARGET_DEVICES += tplink_tl-wr849n-v5
+
 define Device/tplink_tl-wr841n-v13
   $(Device/tplink-v2)
   IMAGE_SIZE := 7808k
