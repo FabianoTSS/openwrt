@@ -73,6 +73,19 @@ define Device/engenius_esr600h
 endef
 TARGET_DEVICES += engenius_esr600h
 
+define Device/intelbras_ap-300
+  SOC := rt3662
+  IMAGE_SIZE := 7872k
+  KERNEL := kernel-bin | append-dtb | gzip | uImage gzip
+  IMAGES += factory.bin
+  KERNEL_INITRAMFS = kernel-bin | append-dtb | lzma | uImage lzma
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | itb-magic-header D80DB2A1
+  DEVICE_VENDOR := Intelbras
+  DEVICE_MODEL := AP-300
+  SUPPORTED_DEVICES += ap-300
+endef
+TARGET_DEVICES += intelbras_ap-300
+
 define Device/loewe_wmdr-143n
   SOC := rt3662
   BLOCKSIZE := 64k

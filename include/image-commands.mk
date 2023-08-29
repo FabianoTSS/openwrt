@@ -147,6 +147,12 @@ define Build/append-uboot
 	dd if=$(UBOOT_PATH) >> $@
 endef
 
+define Build/itb-magic-header
+	echo -n $(1) | awk '{ gsub(/../,"\\\\x&"); print }' | xargs printf | cat - $@ > $@.tmp
+    mv $@.tmp $@
+	md5sum $@ | awk '{ print $$1 }' | awk '{ gsub(/../,"\\\\x&"); print }' | xargs printf | cat - $@ > $@.tmp
+    mv $@.tmp $@
+endef
 # append a fake/empty uImage header, to fool bootloaders rootfs integrity check
 # for example
 define Build/append-uImage-fakehdr
