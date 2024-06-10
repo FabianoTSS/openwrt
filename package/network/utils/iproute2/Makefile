@@ -82,7 +82,7 @@ define Package/tc-mod-iptables
 $(call Package/iproute2/Default)
   TITLE:=Traffic control module - iptables action
   VARIANT:=tcfull
-  DEPENDS:=+libxtables
+  DEPENDS:=+libxtables +libbpf
 endef
 
 define Package/genl
@@ -176,7 +176,7 @@ TARGET_LDFLAGS += -Wl,--gc-sections -Wl,--as-needed
 TARGET_CPPFLAGS += -I$(STAGING_DIR)/usr/include/libnl-tiny
 
 MAKE_FLAGS += \
-	KERNEL_INCLUDE="$(LINUX_DIR)/user_headers/include" \
+	KERNEL_INCLUDE="$(LINUX_DIR)/include/uapi" \
 	SHARED_LIBS=$(SHARED_LIBS) \
 	IP_CONFIG_TINY=$(IP_CONFIG_TINY) \
 	BUILD_VARIANT=$(BUILD_VARIANT) \

@@ -1,16 +1,16 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mt76
-PKG_RELEASE=4
+PKG_RELEASE=5
 
 PKG_LICENSE:=GPLv2
 PKG_LICENSE_FILES:=
 
 PKG_SOURCE_URL:=https://github.com/openwrt/mt76
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2022-03-15
-PKG_SOURCE_VERSION:=053668acdaf83d0350ce3e21720e20eac9fbbcd7
-PKG_MIRROR_HASH:=0102bc20ec385fcdb336dec97a1a345d4c37c2c6be2f3f428938c2ec1fa5d49a
+PKG_SOURCE_DATE:=2023-09-11
+PKG_SOURCE_VERSION:=bdf8ea71700746c634c064d6477aa143f821d6f6
+PKG_MIRROR_HASH:=a080a83068abc204d1f563022391625875ef77deda14be49888c179ff78fa8c8
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_USE_NINJA:=0
@@ -226,11 +226,22 @@ define KernelPackage/mt7915e
   AUTOLOAD:=$(call AutoProbe,mt7915e)
 endef
 
+define KernelPackage/mt7916-firmware
+  $(KernelPackage/mt76-default)
+  DEPENDS+=+kmod-mt7915e
+  TITLE:=MediaTek MT7916 firmware
+endef
+
+define KernelPackage/mt7921-firmware
+  $(KernelPackage/mt76-default)
+  TITLE:=MediaTek MT7921 firmware
+endef
+
 define KernelPackage/mt7921-common
   $(KernelPackage/mt76-default)
   TITLE:=MediaTek MT7615 wireless driver common code
   HIDDEN:=1
-  DEPENDS+=+kmod-mt76-connac +@DRIVER_11AX_SUPPORT
+  DEPENDS+=+kmod-mt76-connac +kmod-mt7921-firmware +@DRIVER_11AX_SUPPORT
   FILES:= $(PKG_BUILD_DIR)/mt7921/mt7921-common.ko
 endef
 
@@ -450,7 +461,16 @@ define KernelPackage/mt7915e/install
 		$(1)/lib/firmware/mediatek
 endef
 
-define KernelPackage/mt7921e/install
+define KernelPackage/mt7916-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
+	cp \
+		$(PKG_BUILD_DIR)/firmware/mt7916_wa.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7916_wm.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7916_rom_patch.bin \
+		$(1)/lib/firmware/mediatek
+endef
+
+define KernelPackage/mt7921-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
 	cp \
 		$(PKG_BUILD_DIR)/firmware/WIFI_MT7961_patch_mcu_1_2_hdr.bin \
@@ -485,6 +505,8 @@ $(eval $(call KernelPackage,mt7663-usb-sdio))
 $(eval $(call KernelPackage,mt7663u))
 $(eval $(call KernelPackage,mt7663s))
 $(eval $(call KernelPackage,mt7915e))
+$(eval $(call KernelPackage,mt7916-firmware))
+$(eval $(call KernelPackage,mt7921-firmware))
 $(eval $(call KernelPackage,mt7921-common))
 $(eval $(call KernelPackage,mt7921u))
 $(eval $(call KernelPackage,mt7921s))

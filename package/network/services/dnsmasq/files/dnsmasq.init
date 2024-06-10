@@ -972,7 +972,14 @@ dnsmasq_start()
 	config_list_foreach "$cfg" "addnhosts" append_addnhosts
 	config_list_foreach "$cfg" "bogusnxdomain" append_bogusnxdomain
 	append_parm "$cfg" "leasefile" "--dhcp-leasefile" "/tmp/dhcp.leases"
-	append_parm "$cfg" "serversfile" "--servers-file"
+
+	local serversfile
+	config_get serversfile "$cfg" "serversfile"
+	[ -n "$serversfile" ] && {
+		xappend "--servers-file=$serversfile"
+		append EXTRA_MOUNT "$serversfile"
+	}
+
 	append_parm "$cfg" "tftp_root" "--tftp-root"
 	append_parm "$cfg" "dhcp_boot" "--dhcp-boot"
 	append_parm "$cfg" "local_ttl" "--local-ttl"
@@ -1171,6 +1178,7 @@ dnsmasq_start()
 		[ ! -e "$logfacility" ] && touch "$logfacility"
 		procd_add_jail_mount_rw "$logfacility"
 	esac
+	[ -e "$hostsfile" ] && procd_add_jail_mount $hostsfile
 
 	procd_close_instance
 }
