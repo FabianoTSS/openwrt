@@ -655,7 +655,7 @@ define Device/tplink_archer-c50-w-v6
   DEVICE_MODEL := Archer C50
   DEVICE_VARIANT := v6 (BR)
   TPLINK_FLASHLAYOUT := 8MSUmtk
-  TPLINK_HWID := 0x0C500006
+  TPLINK_HWID := 0x600500c
   TPLINK_HWREVADD := 0x6
   DEVICE_PACKAGES := kmod-mt7615e kmod-mt7663-firmware-ap
   IMAGES := sysupgrade.bin
