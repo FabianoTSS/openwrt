@@ -30,7 +30,8 @@ platform_do_upgrade() {
 		;;
 	tplink,archer-c20-v5|\
 	tplink,archer-c50-v4|\
-	tplink,archer-c50-v6)
+	tplink,archer-c50-v6|\
+	tplink,archer-c50-w-v6)
 		MTD_ARGS="-t romfile"
 		default_do_upgrade "$1"
 		;;
