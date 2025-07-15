@@ -7,6 +7,9 @@
   "mounts": [
     "source=${localWorkspaceFolder}/.ccache,target=/root/.ccache,type=bind"
   ],
+  "containerEnv": {
+    "FORCE_UNSAFE_CONFIGURE": "1"
+  },
   "features": {},
   "customizations": {
     "vscode": {
