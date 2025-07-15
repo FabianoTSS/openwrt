@@ -1,0 +1,17 @@
+{
+  "name": "OpenWrt 18.06 Builder",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "postCreateCommand": "scripts/setup.sh",
+  "mounts": [
+    "source=${localWorkspaceFolder}/.ccache,target=/root/.ccache,type=bind"
+  ],
+  "features": {},
+  "customizations": {
+    "vscode": {
+      "settings": {},
+      "extensions": []
+    }
+  }
+}
