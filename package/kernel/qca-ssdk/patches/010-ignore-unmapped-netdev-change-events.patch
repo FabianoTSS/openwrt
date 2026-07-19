@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fabiano Tassotti <fabianotassotti@gmail.com>
+Date: Tue, 14 Jul 2026 01:20:00 -0300
+Subject: [PATCH] qca-ssdk: ignore change events from unmapped PHYs
+
+qca_ssdk_phydev_to_port() returns zero both for a valid physical port 0
+and when the PHY address is not present in the SSDK map. External DSA PHY
+events therefore reach the SCOMPHY notifier as port 0 and produce errors.
+
+Boards with an external switch can opt in through the
+qcom,ignore-unmapped-netdev-events property. For those boards, compare the
+encoded PHY address with the address configured for port 0 before discarding
+the event. Boards without the property retain the original notifier behavior.
+
+Signed-off-by: Fabiano Tassotti <fabianotassotti@gmail.com>
+---
+ src/init/ssdk_init.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+--- a/src/init/ssdk_init.c
++++ b/src/init/ssdk_init.c
+@@ -2240,7 +2240,7 @@ static int ssdk_dev_event(struct notifier_block *this, unsigned long event, void
+ 	int rv = 0;
+ 	ssdk_init_cfg cfg;
+ #ifdef MP
+-	a_uint32_t port_id = 0, dev_id = 0;
++	a_uint32_t port_id = 0, dev_id = 0, miibus_id = 0, phy_addr_e = 0;
+ 	struct qca_phy_priv *priv = ssdk_phy_priv_data_get(dev_id);
+ 	adpt_api_t *p_api = adpt_api_ptr_get(dev_id);
+ #endif
+@@ -2308,6 +2308,18 @@ static int ssdk_dev_event(struct notifier_block *this, unsigned long event, void
+ 				if (dev->phydev != NULL) {
+ 					port_id = qca_ssdk_phydev_to_port(priv->device_id,
+ 						dev->phydev);
++					if (priv->of_node &&
++					    of_property_read_bool(priv->of_node,
++							"qcom,ignore-unmapped-netdev-events") &&
++					    port_id == SSDK_PHYSICAL_PORT0) {
++						miibus_id = ssdk_miibus_index_get(priv->device_id,
++							dev->phydev->mdio.bus);
++						phy_addr_e = TO_PHY_ADDR_E(dev->phydev->mdio.addr,
++							miibus_id);
++						if (qca_ssdk_port_to_phy_addr(priv->device_id,
++							SSDK_PHYSICAL_PORT0) != phy_addr_e)
++							return NOTIFY_DONE;
++					}
+ 					rv = p_api->adpt_port_netdev_notify_set(priv, port_id);
+ 					if (rv) {
+ 						SSDK_ERROR("netdev change notify failed\n");
+-- 
+2.50.1

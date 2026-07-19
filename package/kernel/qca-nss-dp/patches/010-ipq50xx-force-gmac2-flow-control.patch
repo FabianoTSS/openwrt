@@ -1,0 +1,68 @@
+From: Fabiano Tassotti <fabianotassotti@gmail.com>
+Subject: [PATCH] qca-nss-dp: allow firmware-defined GMAC flow control
+
+Allow firmware to provide the required flow control register value without
+changing interfaces on boards that do not declare the property.
+
+--- a/hal/gmac_ops/syn/gmac/syn_if.c
++++ b/hal/gmac_ops/syn/gmac/syn_if.c
+@@ -21,6 +21,7 @@
+ #include <fal/fal_port_ctrl.h>
+ #include <linux/clk.h>
+ #include <linux/delay.h>
++#include <linux/of.h>
+ #include <linux/ethtool.h>
+ #include <linux/vmalloc.h>
+ #include <linux/spinlock.h>
+@@ -166,6 +167,24 @@ static void syn_disable_mac_cst(struct n
+ 	hal_clear_reg_bits(nghd->mac_base, SYN_MAC_CONFIGURATION, SYN_MAC_CST_DISABLE);
+ }
+ 
++/*
++ * syn_apply_gmac_flow_control()
++ *	Apply firmware-requested GMAC flow control configuration.
++ */
++static void syn_apply_gmac_flow_control(struct nss_gmac_hal_dev *nghd)
++{
++	struct nss_dp_dev *dp_priv = netdev_priv(nghd->netdev);
++	struct device_node *np = dp_priv->pdev->dev.of_node;
++	u32 flow_control;
++
++	if (of_property_read_u32(np, "qcom,gmac-flow-control",
++				 &flow_control))
++		return;
++
++	hal_write_relaxed_reg(nghd->mac_base, SYN_MAC_FLOW_CONTROL,
++			      flow_control);
++}
++
+ /*
+  * syn_set_rx_flow_ctrl()
+  */
+@@ -398,6 +420,8 @@ static void syn_rx_flow_control(struct n
+ 	} else {
+ 		syn_clear_rx_flow_ctrl(nghd);
+ 	}
++
++	syn_apply_gmac_flow_control(nghd);
+ }
+ 
+ /*
+@@ -415,6 +439,8 @@ static void syn_tx_flow_control(struct n
+ 	} else {
+ 		syn_clear_tx_flow_ctrl(nghd);
+ 	}
++
++	syn_apply_gmac_flow_control(nghd);
+ }
+ 
+ /*
+@@ -831,6 +857,8 @@ static void *syn_init(struct nss_gmac_ha
+ 	syn_broadcast_enable(&shd->nghd);
+ 	syn_multicast_enable(&shd->nghd);
+ 
++	syn_apply_gmac_flow_control(&shd->nghd);
++
+ 	/*
+ 	 * Reset MIB Stats
+ 	 */
