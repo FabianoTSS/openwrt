@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fabiano Tassotti <fabianotassotti@gmail.com>
+Date: Thu, 16 Jul 2026 23:10:00 -0300
+Subject: [PATCH] dt-bindings: wifi: ath11k: document calibration macflag
+
+Document the optional property used by boards whose NVMEM calibration data
+needs the legacy IPQ5018 MAC flag and checksum adjustment. Boards without
+the property keep the calibration data unchanged.
+
+Signed-off-by: Fabiano Tassotti <fabianotassotti@gmail.com>
+---
+ Documentation/devicetree/bindings/net/wireless/qcom,ath11k.yaml | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+--- a/Documentation/devicetree/bindings/net/wireless/qcom,ath11k.yaml
++++ b/Documentation/devicetree/bindings/net/wireless/qcom,ath11k.yaml
+@@ -51,6 +51,13 @@ properties:
+       string to uniquely identify variant of the calibration data in the
+       board-2.bin for designs with colliding bus and device specific ids
+ 
++  qcom,ath11k-calibration-needs-macflag:
++    type: boolean
++    description:
++      Adjust the legacy IPQ5018 calibration MAC flag and checksum after
++      reading the calibration NVMEM cell. Boards without this property use
++      the cell contents unchanged.
++
+   memory-region:
+     minItems: 1
+     maxItems: 2
+-- 
+2.50.1
