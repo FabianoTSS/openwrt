@@ -1,0 +1,146 @@
+From: Fabiano Tassotti <fabianotassotti@gmail.com>
+Subject: [PATCH] net: dsa: support RTL8367D VLAN upper traffic
+
+The VSC73XX 802.1Q tagger normally identifies an ingress user port from a
+private DSA VID.  On RTL8367D, a frame received through an 802.1Q upper such
+as wan.101 reaches the CPU with the user VID instead, so the private source
+port information is unavailable.
+
+Allow explicitly opted-in switches to use a standalone 802.1Q upper as a
+last-resort VID-to-port mapping.  Accept only an unambiguous mapping on the
+same conduit; if a VID exists on more than one standalone user port, leave
+the packet undecoded rather than risk delivering it to the wrong port.
+
+For CPU-originated traffic on VLAN-aware bridges, use the bridge PVID as the
+tagger VID when the switch opts in.  This keeps packets sourced from devices
+such as br-lan.2 on the VLAN that the switch actually programmed for the
+egress user port, instead of falling back to the standalone private DSA VID.
+
+The capability defaults to disabled and requires the dedicated
+realtek,rtl8367d-standalone-vlan-uppers DTS opt-in. Bridge and private-VID
+decoding retain priority and all other switches keep their previous behavior.
+
+--- a/include/net/dsa.h
++++ b/include/net/dsa.h
+@@ -431,6 +431,12 @@ struct dsa_switch {
+ 	 */
+ 	u32			untag_vlan_aware_bridge_pvid:1;
+ 
++	/* Allow tag_8021q receive paths to identify a standalone user port
++	 * from an unambiguous 802.1Q upper VID when no private source tag is
++	 * available.
++	 */
++	u32			tag_8021q_vlan_upper_rx:1;
++
+ 	/* Let DSA manage the FDB entries towards the
+ 	 * CPU, based on the software bridge database.
+ 	 */
+--- a/net/dsa/tag.h
++++ b/net/dsa/tag.h
+@@ -223,6 +223,47 @@ dsa_find_designated_bridge_port_by_vid(s
+ 	return NULL;
+ }
+ 
++/* Some 802.1Q-based tag protocols cannot carry a private source-port VID
++ * together with a user VID. Resolve the latter only when an opted-in switch
++ * has exactly one standalone user port with a matching 802.1Q upper.
++ */
++static inline struct net_device *
++dsa_find_standalone_vlan_upper_by_vid(struct net_device *conduit, u16 vid)
++{
++	struct dsa_port *cpu_dp = conduit->dsa_ptr;
++	struct dsa_switch_tree *dst = cpu_dp->dst;
++	struct net_device *upper, *candidate = NULL;
++	struct list_head *iter;
++	struct dsa_port *dp;
++
++	list_for_each_entry(dp, &dst->ports, list) {
++		if (dp->type != DSA_PORT_TYPE_USER)
++			continue;
++
++		if (!dp->ds->tag_8021q_vlan_upper_rx)
++			continue;
++
++		if (dp->bridge || dp->cpu_dp != cpu_dp)
++			continue;
++
++		netdev_for_each_upper_dev_rcu(dp->user, upper, iter) {
++			if (!is_vlan_dev(upper))
++				continue;
++
++			if (vlan_dev_vlan_proto(upper) != htons(ETH_P_8021Q) ||
++			    vlan_dev_vlan_id(upper) != vid)
++				continue;
++
++			if (candidate && candidate != dp->user)
++				return NULL;
++
++			candidate = dp->user;
++		}
++	}
++
++	return candidate;
++}
++
+ /* If the ingress port offloads the bridge, we mark the frame as autonomously
+  * forwarded by hardware, so the software bridge doesn't forward in twice, back
+  * to us, because we already did. However, if we're in fallback mode and we do
+--- a/net/dsa/tag_vsc73xx_8021q.c
++++ b/net/dsa/tag_vsc73xx_8021q.c
+@@ -12,19 +12,33 @@ static struct sk_buff *
+ vsc73xx_xmit(struct sk_buff *skb, struct net_device *netdev)
+ {
+ 	struct dsa_port *dp = dsa_user_to_port(netdev);
++	struct net_device *br;
+ 	u16 queue_mapping = skb_get_queue_mapping(skb);
+ 	u16 tx_vid = dsa_tag_8021q_standalone_vid(dp);
+ 	u8 pcp;
+ 
+ 	if (skb->offload_fwd_mark) {
+ 		unsigned int bridge_num = dsa_port_bridge_num_get(dp);
+-		struct net_device *br = dsa_port_bridge_dev_get(dp);
++		br = dsa_port_bridge_dev_get(dp);
+ 
+-		if (br_vlan_enabled(br))
++		if (br_vlan_enabled(br) && !dp->ds->tag_8021q_vlan_upper_rx)
+ 			return skb;
+ 
+ 		tx_vid = dsa_tag_8021q_bridge_vid(bridge_num);
+ 	}
++
++	br = dsa_port_bridge_dev_get(dp);
++	if (br && br_vlan_enabled(br) && dp->ds->tag_8021q_vlan_upper_rx) {
++		u16 pvid;
++		int err;
++
++		rcu_read_lock();
++		err = br_vlan_get_pvid_rcu(netdev, &pvid);
++		rcu_read_unlock();
++
++		if (!err)
++			tx_vid = pvid;
++	}
+ 
+ 	pcp = netdev_txq_to_tc(netdev, queue_mapping);
+ 
+@@ -38,5 +53,8 @@ static struct sk_buff *
+ 	skb->dev = dsa_tag_8021q_find_user(netdev, src_port, switch_id,
+ 					   vid, vbid);
++	if (!skb->dev)
++		skb->dev = dsa_find_standalone_vlan_upper_by_vid(netdev, vid);
++
+ 	if (!skb->dev) {
+ 		dev_warn_ratelimited(&netdev->dev,
+ 				     "Couldn't decode source port\n");
+--- a/drivers/net/dsa/realtek/rtl8365mb_main.c
++++ b/drivers/net/dsa/realtek/rtl8365mb_main.c
+@@ -2925,6 +2925,9 @@ static int rtl8365mb_setup(struct dsa_sw
+ 	cpu->mask = upports_mask;
+ 	cpu->enable = cpu->mask > 0;
+ 	use_8021q = rtl8367s_vb_use_8021q_tagging(priv);
++	ds->tag_8021q_vlan_upper_rx = use_8021q &&
++		fwnode_property_present(fwnode,
++					"realtek,rtl8367d-standalone-vlan-uppers");
+ 
+ 	/* Module parameters remain the legacy fallback. Firmware properties
+ 	 * override them only for the switch instance that declares them.

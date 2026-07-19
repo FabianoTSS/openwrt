@@ -1,0 +1,154 @@
+From: Fabiano Tassotti <fabianotassotti@gmail.com>
+Subject: [PATCH] net: dsa: realtek: fix RTL8367D VLAN-aware transitions
+
+The opt-in RTL8367D 802.1Q datapath uses private PVIDs to identify source
+ports while they are standalone or in a VLAN-unaware bridge. A VLAN-aware
+bridge instead needs the bridge PVID on ingress so that tag_8021q can find
+the designated bridge port from the user-visible VID.
+
+Program bridge PVIDs through the RTL8367D direct register path while VLAN
+filtering is active and restore the private standalone VID when they are
+removed. Also restore the per-switch 802.1Q pipeline settings when VLAN
+filtering is disabled instead of applying the generic REAL_KEEP fallback.
+
+All changed behavior remains guarded by the per-switch DTS opt-in.
+
+--- a/drivers/net/dsa/realtek/rtl8365mb_main.c
++++ b/drivers/net/dsa/realtek/rtl8365mb_main.c
+@@ -1620,6 +1620,12 @@ static int rtl8365mb_port_vlan_filtering
+ 	enum rtl8365mb_frame_ingress accepted_frame, prev_accepted_frame;
+ 	enum rtl8365mb_vlan_egress_mode mode;
+ 	struct realtek_priv *priv = ds->priv;
++	struct rtl8365mb *mb = priv->chip_data;
++	bool ingress_filtering = vlan_filtering;
++	bool old_ingress_filtering = !vlan_filtering;
++	bool transparent = !vlan_filtering;
++	bool old_transparent = vlan_filtering;
++	bool use_8021q;
+ 	u32 configured_ports = 0;
+ 	struct dsa_port *dp;
+ 	u16 pvid_vid;
+@@ -1654,7 +1660,27 @@ static int rtl8365mb_port_vlan_filtering
+ 	 * called for all member ports. We need to enable/disable ingress
+ 	 * VLAN membership check.
+ 	 */
+-	ret = rtl8365mb_port_set_ingress_filtering(priv, port, vlan_filtering);
++	use_8021q = rtl8367s_vb_use_8021q_tagging(priv);
++	if (use_8021q) {
++		bool fallback_ingress = mb->rtl8367d_ingress_filter;
++
++		if (ds->tag_8021q_vlan_upper_rx)
++			fallback_ingress = false;
++		else if (port == mb->rtl8367d_wan_port &&
++		    !mb->rtl8367d_wan_ingress_filter)
++			fallback_ingress = false;
++
++		if (vlan_filtering) {
++			old_ingress_filtering = fallback_ingress;
++			old_transparent = mb->rtl8367d_transparent;
++		} else {
++			ingress_filtering = fallback_ingress;
++			transparent = mb->rtl8367d_transparent;
++		}
++	}
++
++	ret = rtl8365mb_port_set_ingress_filtering(priv, port,
++						   ingress_filtering);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -1666,7 +1690,7 @@ static int rtl8365mb_port_vlan_filtering
+ 	dsa_switch_for_each_available_port(dp, ds) {
+ 		/* port isolation will still keep traffic inside the bridge */
+ 		ret = rtl8365mb_port_set_transparent(priv, port, dp->index,
+-						     !vlan_filtering);
++						     transparent);
+ 		if (ret)
+ 			goto undo_transparent;
+ 
+@@ -1689,6 +1713,8 @@ static int rtl8365mb_port_vlan_filtering
+ 	 */
+ 	if (vlan_filtering)
+ 		mode = RTL8365MB_VLAN_EGRESS_MODE_ORIGINAL;
++	else if (use_8021q)
++		mode = mb->rtl8367d_egress_mode;
+ 	else
+ 		mode = RTL8365MB_VLAN_EGRESS_MODE_REAL_KEEP;
+ 
+@@ -1715,10 +1741,11 @@ undo_transparent:
+ 	dsa_switch_for_each_port(dp, ds) {
+ 		if (configured_ports & BIT(dp->index))
+ 			rtl8365mb_port_set_transparent(priv, port, dp->index,
+-						       vlan_filtering);
++						       old_transparent);
+ 	}
+ 
+-	rtl8365mb_port_set_ingress_filtering(priv, port, !vlan_filtering);
++	rtl8365mb_port_set_ingress_filtering(priv, port,
++					     old_ingress_filtering);
+ 
+ 	return ret;
+ }
+--- a/drivers/net/dsa/realtek/rtl8365mb_vlan.c
++++ b/drivers/net/dsa/realtek/rtl8365mb_vlan.c
+@@ -48,6 +48,7 @@
+ 
+ #include "rtl8365mb_vlan.h"
+ #include "rtl8365mb_table.h"
++#include <linux/dsa/8021q.h>
+ #include <linux/if_bridge.h>
+ #include <linux/lockdep.h>
+ #include <linux/regmap.h>
+@@ -1028,12 +1029,19 @@ int rtl8365mb_vlan_pvid_port_set(struct
+ 
+ 	lockdep_assert_held(&priv->vlan_lock);
+ 
+-	/* The RTL8367D 802.1Q tagger owns the direct PVID.  Replacing its
+-	 * private source-port VID with a bridge PVID makes RX frames impossible
+-	 * to demultiplex and the RTL8365MB packed write corrupts another port.
++	/* A VLAN-aware bridge needs its user-visible PVID on ingress. The
++	 * tagger can then identify the designated bridge port from that VID.
++	 * Outside VLAN filtering, retain the private source-port VID.
+ 	 */
+-	if (rtl8367s_vb_uses_rtl8367d_vlan(priv))
+-		return 0;
++	if (rtl8367s_vb_uses_rtl8367d_vlan(priv)) {
++		if (!dsa_port_is_vlan_filtering(dsa_to_port(ds, port)))
++			return 0;
++
++		return rtl8367s_vlan_tag_8021q_port_set_direct_pvid(ds, port,
++								     dsa_upstream_port(ds,
++										       port),
++								     vid);
++	}
+ 
+ 	/* Read the old PVID exclusively to undo in case of error */
+ 	ret = rtl8365mb_vlan_get_pvid_mc(priv, port, &prev_vlanmc_idx,
+@@ -1130,11 +1138,23 @@ int rtl8365mb_vlan_pvid_port_clear(struc
+ 
+ 	lockdep_assert_held(&priv->vlan_lock);
+ 
+-	/* Keep the private RX VID installed by the RTL8367D 802.1Q tagger.
+-	 * It is transport metadata, not the bridge's user-visible PVID.
++	/* Restore the private source-port VID when a bridge PVID is removed.
++	 * This also repairs the standalone path after VLAN filtering is turned
++	 * off, without using the packed VLANMC registers on RTL8367D.
+ 	 */
+-	if (rtl8367s_vb_uses_rtl8367d_vlan(priv))
+-		return 0;
++	if (rtl8367s_vb_uses_rtl8367d_vlan(priv)) {
++		struct dsa_port *dp = dsa_to_port(ds, port);
++		u16 current_pvid;
++
++		ret = rtl8365mb_vlan_port_get_pvid(priv, port, &current_pvid);
++		if (ret || current_pvid != vid)
++			return ret;
++
++		return rtl8367s_vlan_tag_8021q_port_set_direct_pvid(ds, port,
++								     dsa_upstream_port(ds,
++										       port),
++								     dsa_tag_8021q_standalone_vid(dp));
++	}
+ 
+ 	ret = rtl8365mb_vlan_get_pvid_mc(priv, port, &vlanmc_idx,
+ 					 &vlanmc);
