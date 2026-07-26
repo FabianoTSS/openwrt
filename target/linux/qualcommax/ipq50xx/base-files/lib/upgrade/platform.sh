@@ -6,6 +6,29 @@ REQUIRE_IMAGE_METADATA=1
 RAMFS_COPY_BIN='dumpimage fw_printenv fw_setenv head qcom-mibib seq'
 RAMFS_COPY_DATA='/etc/fw_env.config /var/lock/fw_printenv.lock'
 
+mercusys_mr80x_v5_set_bootenv() {
+	local bootcmd
+	local bootdelay
+	local boot_idx
+
+	# fw_setenv falls back to its compiled-in defaults when the OEM environment
+	# is erased. Override the incompatible distro boot command explicitly.
+	fw_setenv -s - <<-EOF || return 1
+		bootcmd bootipq
+		bootdelay 1
+		tp_boot_idx 0
+	EOF
+
+	bootcmd="$(fw_printenv -n bootcmd 2>/dev/null)"
+	bootdelay="$(fw_printenv -n bootdelay 2>/dev/null)"
+	boot_idx="$(fw_printenv -n tp_boot_idx 2>/dev/null)"
+	if [ "$bootcmd" != "bootipq" ] || [ "$bootdelay" != "1" ] ||
+		[ "$boot_idx" != "0" ]; then
+		echo "failed to prepare the MR80X v5 U-Boot environment"
+		return 1
+	fi
+}
+
 xiaomi_initramfs_prepare() {
 	# Wipe UBI if running initramfs
 	[ "$(rootfs_type)" = "tmpfs" ] || return 0
@@ -48,9 +71,9 @@ mercusys_mr80x_v5_initramfs_prepare() {
 		return 1
 
 	# rootfs_1 will no longer exist after the new MIBIB copy becomes active.
-	# Set the primary slot first so a power loss between the following steps
-	# cannot leave U-Boot selecting the removed alternate partition.
-	fw_setenv tp_boot_idx 0 || return 1
+	# Select the primary slot and ensure an erased environment still boots via
+	# the OEM bootipq command before making any destructive layout change.
+	mercusys_mr80x_v5_set_bootenv || return 1
 
 	ubidetach -m "$rootfs_mtdnum" 2>/dev/null
 	ubiformat "/dev/mtd$rootfs_mtdnum" -y || return 1
@@ -100,9 +123,7 @@ mercusys_mr80x_v5_do_upgrade() {
 	CI_ROOT_UBIPART="rootfs"
 	CI_DATA_UBIPART="rootfs"
 
-	fw_setenv -s - <<-EOF || nand_do_upgrade_failed
-		tp_boot_idx 0
-	EOF
+	mercusys_mr80x_v5_set_bootenv || nand_do_upgrade_failed
 
 	remove_oem_ubi_volume ubi_rootfs
 	nand_do_upgrade "$1"
