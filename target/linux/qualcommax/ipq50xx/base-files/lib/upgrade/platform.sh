@@ -42,8 +42,8 @@ mercusys_mr80x_v5_initramfs_prepare() {
 		return 1
 	fi
 
-	# Refuse unknown layouts or a MIBIB without a free redundant eraseblock
-	# before making any destructive change to the UBI area.
+	# Refuse unknown layouts unless both bootloader-visible MIBIB copies are
+	# valid before making any destructive change to the UBI area.
 	qcom-mibib probe "/dev/mtd$mibib_mtdnum" mr80x-v5-unified ||
 		return 1
 
@@ -55,10 +55,14 @@ mercusys_mr80x_v5_initramfs_prepare() {
 	ubidetach -m "$rootfs_mtdnum" 2>/dev/null
 	ubiformat "/dev/mtd$rootfs_mtdnum" -y || return 1
 
-	# Keep both OEM copies intact and activate a checked copy in a previously
-	# erased block. The utility verifies the NAND readback before returning.
+	# Replace only the older boot slot and retain the active OEM copy as a
+	# fallback. The utility verifies the NAND readback before returning.
 	qcom-mibib apply "/dev/mtd$mibib_mtdnum" \
-		mr80x-v5-unified --yes-really
+		mr80x-v5-unified --yes-really || {
+		echo "failed to activate the unified MR80X v5 MIBIB layout"
+		nand_do_upgrade_failed
+		return 1
+	}
 }
 
 remove_oem_ubi_volume() {

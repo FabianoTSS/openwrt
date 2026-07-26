@@ -35,6 +35,7 @@
 #define MIBIB_TRAILER_MAGIC2		0xf1ded2eaU
 #define MIBIB_TRAILER_VERSION		1U
 #define MIBIB_TRAILER_CRC_OFFSET	0x180cU
+#define MIBIB_BOOT_COPY_COUNT		2U
 
 #define MR80X_PART_COUNT		16U
 #define MR80X_ROOTFS_INDEX		11U
@@ -416,34 +417,17 @@ static bool mtd_block_is_bad(int fd, size_t offset)
 	return ret > 0;
 }
 
-static int find_erased_block(struct mibib_image *image, int fd)
-{
-	size_t i;
-
-	for (i = 0; i < image->blocks; i++) {
-		uint8_t *block = image->data + i * image->erasesize;
-
-		if (!block_is_erased(block, image->erasesize))
-			continue;
-		if (image->is_mtd &&
-		    mtd_block_is_bad(fd, i * image->erasesize))
-			continue;
-		return i;
-	}
-
-	return -1;
-}
-
 static int prepare_profile(struct mibib_image *image, int fd,
 			   enum mr80x_profile target, uint8_t **new_block_out,
 			   int *target_block_out)
 {
-	struct valid_copy copies[32];
+	struct valid_copy boot_copies[MIBIB_BOOT_COPY_COUNT];
+	struct valid_copy all_copies[32];
 	uint8_t *source;
 	uint8_t *new_block;
 	uint8_t *rootfs;
 	uint8_t *rootfs_1;
-	size_t count;
+	size_t all_count;
 	uint32_t max_age = 0;
 	int newest;
 	int target_block;
@@ -455,43 +439,57 @@ static int prepare_profile(struct mibib_image *image, int fd,
 		return -1;
 	}
 
-	count = collect_valid_copies(image, copies,
-				     ARRAY_SIZE(copies));
-	if (!count || count > ARRAY_SIZE(copies)) {
-		fprintf(stderr, "qcom-mibib: no usable set of valid copies\n");
-		return -1;
+	for (i = 0; i < MIBIB_BOOT_COPY_COUNT; i++) {
+		uint8_t *block = image->data + i * image->erasesize;
+
+		boot_copies[i].block = i;
+		if (!copy_is_valid(block, &boot_copies[i].profile,
+				   &boot_copies[i].age) ||
+		    boot_copies[i].profile == MR80X_PROFILE_UNKNOWN) {
+			fprintf(stderr,
+				"qcom-mibib: boot slot %zu is not a valid known copy\n",
+				i);
+			return -1;
+		}
+		if (image->is_mtd &&
+		    mtd_block_is_bad(fd, i * image->erasesize)) {
+			fprintf(stderr,
+				"qcom-mibib: boot slot %zu is marked bad\n", i);
+			return -1;
+		}
 	}
 
-	newest = newest_copy(copies, count);
-	if (copies[newest].profile == target) {
-		printf("qcom-mibib: newest copy already uses %s\n",
+	newest = newest_copy(boot_copies, ARRAY_SIZE(boot_copies));
+	if (boot_copies[newest].profile == target) {
+		printf("qcom-mibib: active boot copy already uses %s\n",
 		       profile_name(target));
 		*new_block_out = NULL;
 		*target_block_out = -1;
 		return 0;
 	}
-	if (copies[newest].profile == MR80X_PROFILE_UNKNOWN) {
-		fprintf(stderr,
-			"qcom-mibib: newest copy does not match a known MR80X v5 layout\n");
+
+	all_count = collect_valid_copies(image, all_copies,
+					 ARRAY_SIZE(all_copies));
+	if (!all_count || all_count > ARRAY_SIZE(all_copies)) {
+		fprintf(stderr, "qcom-mibib: no usable set of valid copies\n");
 		return -1;
 	}
-
-	for (i = 0; i < count; i++)
-		if (copies[i].age > max_age)
-			max_age = copies[i].age;
+	for (i = 0; i < all_count; i++)
+		if (all_copies[i].age > max_age)
+			max_age = all_copies[i].age;
 	if (max_age == UINT32_MAX) {
 		fprintf(stderr, "qcom-mibib: copy age cannot be incremented\n");
 		return -1;
 	}
 
-	target_block = find_erased_block(image, fd);
-	if (target_block < 0) {
-		fprintf(stderr,
-			"qcom-mibib: no erased good block is available; refusing to erase a valid copy\n");
-		return -1;
-	}
+	/*
+	 * The MR80X v5 bootloader only scans eraseblocks 0 and 1. Keep the
+	 * active copy intact and replace the older boot slot atomically.
+	 */
+	target_block = newest == 0 ? 1 : 0;
 
-	source = image->data + copies[newest].block * image->erasesize;
+	source = image->data +
+		 boot_copies[newest].block * image->erasesize;
 	new_block = malloc(image->erasesize);
 	if (!new_block) {
 		fprintf(stderr, "qcom-mibib: out of memory\n");
@@ -539,8 +537,8 @@ static int prepare_profile(struct mibib_image *image, int fd,
 	}
 
 	printf("qcom-mibib: source block=%zu age=%u profile=%s\n",
-	       copies[newest].block, copies[newest].age,
-	       profile_name(copies[newest].profile));
+	       boot_copies[newest].block, boot_copies[newest].age,
+	       profile_name(boot_copies[newest].profile));
 	printf("qcom-mibib: target block=%d age=%u profile=%s\n",
 	       target_block, max_age + 1, profile_name(target));
 
@@ -552,7 +550,9 @@ static int prepare_profile(struct mibib_image *image, int fd,
 static int inspect_image(struct mibib_image *image)
 {
 	struct valid_copy copies[32];
+	struct valid_copy boot_copies[MIBIB_BOOT_COPY_COUNT];
 	size_t count;
+	size_t boot_count = 0;
 	size_t i;
 	int newest;
 
@@ -584,16 +584,20 @@ static int inspect_image(struct mibib_image *image)
 			       "erased" : "invalid/non-empty");
 	}
 
-	newest = newest_copy(copies, count);
+	for (i = 0; i < count; i++)
+		if (copies[i].block < MIBIB_BOOT_COPY_COUNT)
+			boot_copies[boot_count++] = copies[i];
+
+	newest = newest_copy(boot_copies, boot_count);
 	if (newest < 0) {
-		fprintf(stderr, "qcom-mibib: no valid copies found\n");
+		fprintf(stderr, "qcom-mibib: no valid boot copies found\n");
 		return -1;
 	}
 
-	printf("active: block=%zu age=%u profile=%s\n",
-	       copies[newest].block, copies[newest].age,
-	       profile_name(copies[newest].profile));
-	return copies[newest].profile == MR80X_PROFILE_UNKNOWN ? -1 : 0;
+	printf("active boot copy: block=%zu age=%u profile=%s\n",
+	       boot_copies[newest].block, boot_copies[newest].age,
+	       profile_name(boot_copies[newest].profile));
+	return boot_copies[newest].profile == MR80X_PROFILE_UNKNOWN ? -1 : 0;
 }
 
 static int write_mtd_copy(int fd, struct mibib_image *image,
@@ -618,7 +622,7 @@ static int write_mtd_copy(int fd, struct mibib_image *image,
 			target_block, strerror(errno));
 		return -1;
 	}
-	if (fsync(fd)) {
+	if (fsync(fd) && errno != EINVAL && errno != ENOTSUP) {
 		fprintf(stderr, "qcom-mibib: fsync failed: %s\n",
 			strerror(errno));
 		return -1;
