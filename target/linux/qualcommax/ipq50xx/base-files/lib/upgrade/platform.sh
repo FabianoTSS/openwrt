@@ -56,12 +56,13 @@ mercusys_mr80x_v5_do_upgrade() {
 	# This U-Boot reliably boots the primary rootfs partition. Switching
 	# tp_boot_idx to the alternate rootfs_1 path makes bootipq hit a data abort.
 	#
-	# Reuse the dormant rootfs_1 slot as the OpenWrt data UBI, following the
-	# same split-root/data idea used by boards like the Xiaomi AX3600, but
-	# without changing the boot path away from the known-good primary rootfs.
+	# Keep kernel, rootfs and rootfs_data in the primary UBI. The runtime only
+	# attaches this partition, so placing rootfs_data in rootfs_1 leaves a stale
+	# data volume in the primary UBI and eventually makes upgrades run out of
+	# PEBs while recreating rootfs.
 	CI_UBIPART="rootfs"
 	CI_ROOT_UBIPART="rootfs"
-	CI_DATA_UBIPART="rootfs_1"
+	CI_DATA_UBIPART="rootfs"
 
 	fw_setenv -s - <<-EOF || nand_do_upgrade_failed
 		tp_boot_idx 0
