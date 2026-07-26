@@ -295,9 +295,13 @@ define Device/mercusys_mr80x-v5
 	BLOCKSIZE := 128k
 	PAGESIZE := 2048
 	NAND_SIZE := 128m
+	DEVICE_COMPAT_VERSION := 2.0
+	DEVICE_COMPAT_MESSAGE := Flash layout changed to a unified rootfs. \
+		Boot the matching initramfs image and reinstall from there.
 	DEVICE_PACKAGES := ath11k-firmware-ipq5018-qcn6122 \
 		ipq-wifi-mercusys_mr80x-v5 \
 		kmod-dsa-rtl8367d \
+		qcom-mibib \
 		uboot-envtools \
 		zram-swap
 endef

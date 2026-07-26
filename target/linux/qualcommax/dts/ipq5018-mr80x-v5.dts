@@ -126,7 +126,6 @@
 			partition@80000 {
 				label = "0:mibib";
 				reg = <0x00080000 0x00080000>;
-				read-only;
 			};
 
 			partition@100000 {
@@ -202,12 +201,7 @@
 
 			partition@640000 {
 				label = "rootfs";
-				reg = <0x00640000 0x02a00000>;
-			};
-
-			partition@3040000 {
-				label = "rootfs_1";
-				reg = <0x03040000 0x02a00000>;
+				reg = <0x00640000 0x05400000>;
 			};
 
 			partition_tp_data: partition@5a40000 {
