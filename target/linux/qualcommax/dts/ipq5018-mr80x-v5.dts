@@ -51,6 +51,33 @@
 		pinctrl-0 = <&led_pins>;
 		pinctrl-names = "default";
 
+		wan {
+			gpios = <&tlmm 10 GPIO_ACTIVE_HIGH>;
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_WAN;
+		};
+
+		lan1 {
+			gpios = <&tlmm 33 GPIO_ACTIVE_HIGH>;
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_LAN;
+			function-enumerator = <1>;
+		};
+
+		lan2 {
+			gpios = <&tlmm 11 GPIO_ACTIVE_HIGH>;
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_LAN;
+			function-enumerator = <2>;
+		};
+
+		lan3 {
+			gpios = <&tlmm 32 GPIO_ACTIVE_HIGH>;
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_LAN;
+			function-enumerator = <3>;
+		};
+
 		led_status_green: status-green {
 			gpios = <&tlmm 13 GPIO_ACTIVE_HIGH>;
 			color = <LED_COLOR_ID_GREEN>;
@@ -370,7 +397,8 @@
 	};
 
 	led_pins: led-state {
-		pins = "gpio12", "gpio13";
+		pins = "gpio10", "gpio11", "gpio12",
+		       "gpio13", "gpio32", "gpio33";
 		function = "gpio";
 		drive-strength = <8>;
 		bias-pull-down;
