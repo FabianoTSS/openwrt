@@ -1,0 +1,34 @@
+#!/bin/sh
+
+. /lib/functions.sh
+. /lib/functions/system.sh
+
+[ "$(board_name)" = "mercusys,mr80x-v5" ] || exit 0
+
+add_netdev_led() {
+	local section="$1"
+	local name="$2"
+	local sysfs="$3"
+	local device="$4"
+
+	uci -q get "system.$section" >/dev/null && return
+	uci -q show system | grep -Fq ".sysfs='$sysfs'" && return
+
+	uci -q batch <<-EOF
+		set system.$section='led'
+		set system.$section.name='$name'
+		set system.$section.sysfs='$sysfs'
+		set system.$section.trigger='netdev'
+		set system.$section.dev='$device'
+		set system.$section.mode='link_10 link_100 link_1000 tx rx'
+	EOF
+}
+
+add_netdev_led led_wan WAN green:wan wan
+add_netdev_led led_lan1 LAN1 green:lan-1 lan1
+add_netdev_led led_lan2 LAN2 green:lan-2 lan2
+add_netdev_led led_lan3 LAN3 green:lan-3 lan3
+
+uci commit system
+
+exit 0
