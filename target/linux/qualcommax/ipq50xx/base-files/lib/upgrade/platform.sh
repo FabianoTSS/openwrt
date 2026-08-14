@@ -3,8 +3,31 @@
 PART_NAME=firmware
 REQUIRE_IMAGE_METADATA=1
 
-RAMFS_COPY_BIN='dumpimage fw_printenv fw_setenv head seq'
+RAMFS_COPY_BIN='dumpimage fw_printenv fw_setenv head qcom-mibib seq'
 RAMFS_COPY_DATA='/etc/fw_env.config /var/lock/fw_printenv.lock'
+
+mercusys_mr80x_v5_set_bootenv() {
+	local bootcmd
+	local bootdelay
+	local boot_idx
+
+	# fw_setenv falls back to its compiled-in defaults when the OEM environment
+	# is erased. Override the incompatible distro boot command explicitly.
+	fw_setenv -s - <<-EOF || return 1
+		bootcmd bootipq
+		bootdelay 1
+		tp_boot_idx 0
+	EOF
+
+	bootcmd="$(fw_printenv -n bootcmd 2>/dev/null)"
+	bootdelay="$(fw_printenv -n bootdelay 2>/dev/null)"
+	boot_idx="$(fw_printenv -n tp_boot_idx 2>/dev/null)"
+	if [ "$bootcmd" != "bootipq" ] || [ "$bootdelay" != "1" ] ||
+		[ "$boot_idx" != "0" ]; then
+		echo "failed to prepare the MR80X v5 U-Boot environment"
+		return 1
+	fi
+}
 
 xiaomi_initramfs_prepare() {
 	# Wipe UBI if running initramfs
@@ -29,6 +52,42 @@ xiaomi_initramfs_prepare() {
 	ubiformat /dev/mtd$kern_mtdnum -y
 }
 
+mercusys_mr80x_v5_initramfs_prepare() {
+	# The stock and unified layouts overlap. Only an initramfs can safely
+	# erase both stock UBI slots before activating the unified MIBIB copy.
+	[ "$(rootfs_type)" = "tmpfs" ] || return 0
+
+	local mibib_mtdnum="$(find_mtd_index 0:mibib)"
+	local rootfs_mtdnum="$(find_mtd_index rootfs)"
+
+	if [ ! "$mibib_mtdnum" ] || [ ! "$rootfs_mtdnum" ]; then
+		echo "unable to find the MR80X v5 MIBIB or rootfs partition"
+		return 1
+	fi
+
+	# Refuse unknown layouts unless both bootloader-visible MIBIB copies are
+	# valid before making any destructive change to the UBI area.
+	qcom-mibib probe "/dev/mtd$mibib_mtdnum" mr80x-v5-unified ||
+		return 1
+
+	# rootfs_1 will no longer exist after the new MIBIB copy becomes active.
+	# Select the primary slot and ensure an erased environment still boots via
+	# the OEM bootipq command before making any destructive layout change.
+	mercusys_mr80x_v5_set_bootenv || return 1
+
+	ubidetach -m "$rootfs_mtdnum" 2>/dev/null
+	ubiformat "/dev/mtd$rootfs_mtdnum" -y || return 1
+
+	# Replace only the older boot slot and retain the active OEM copy as a
+	# fallback. The utility verifies the NAND readback before returning.
+	qcom-mibib apply "/dev/mtd$mibib_mtdnum" \
+		mr80x-v5-unified --yes-really || {
+		echo "failed to activate the unified MR80X v5 MIBIB layout"
+		nand_do_upgrade_failed
+		return 1
+	}
+}
+
 remove_oem_ubi_volume() {
 	local oem_volume_name="$1"
 	local oem_ubivol
@@ -50,6 +109,24 @@ remove_oem_ubi_volume() {
 		oem_ubivol=$(nand_find_volume "$ubidev" "$oem_volume_name")
 		[ "$oem_ubivol" ] && ubirmvol "/dev/$ubidev" --name="$oem_volume_name"
 	fi
+}
+
+mercusys_mr80x_v5_do_upgrade() {
+	# This U-Boot reliably boots the primary rootfs partition. Switching
+	# tp_boot_idx to the alternate rootfs_1 path makes bootipq hit a data abort.
+	#
+	# Keep kernel, rootfs and rootfs_data in the primary UBI. The runtime only
+	# attaches this partition, so placing rootfs_data in rootfs_1 leaves a stale
+	# data volume in the primary UBI and eventually makes upgrades run out of
+	# PEBs while recreating rootfs.
+	CI_UBIPART="rootfs"
+	CI_ROOT_UBIPART="rootfs"
+	CI_DATA_UBIPART="rootfs"
+
+	mercusys_mr80x_v5_set_bootenv || nand_do_upgrade_failed
+
+	remove_oem_ubi_volume ubi_rootfs
+	nand_do_upgrade "$1"
 }
 
 linksys_bootconfig_set_primaryboot() {
@@ -171,6 +248,9 @@ platform_check_image() {
 
 platform_pre_upgrade() {
 	case "$(board_name)" in
+	mercusys,mr80x-v5)
+		mercusys_mr80x_v5_initramfs_prepare
+		;;
 	xiaomi,ax6000)
 		xiaomi_initramfs_prepare
 		;;
@@ -212,6 +292,9 @@ platform_do_upgrade() {
 		linksys_bootconfig_pre_upgrade "$1"
 		remove_oem_ubi_volume ubi_rootfs
 		nand_do_upgrade "$1"
+		;;
+	mercusys,mr80x-v5)
+		mercusys_mr80x_v5_do_upgrade "$1"
 		;;
 	xiaomi,ax6000|\
 	xiaomi,redmi-ax5400)
