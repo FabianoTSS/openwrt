@@ -968,6 +968,21 @@ endef
 $(eval $(call KernelPackage,dsa-rtl8365mb))
 
 
+define KernelPackage/dsa-rtl8367d
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Realtek RTL8367D-family VLAN DSA datapath
+  DEPENDS:=+kmod-dsa-rtl8365mb @!TARGET_x86 @!TARGET_bcm47xx @!TARGET_uml
+  KCONFIG:=CONFIG_NET_DSA_TAG_VSC73XX_8021Q
+  FILES:=$(LINUX_DIR)/net/dsa/tag_vsc73xx_8021q.ko
+endef
+
+define KernelPackage/dsa-rtl8367d/description
+  Optional VLAN-based DSA datapath for RTL8367D-family switch integrations.
+endef
+
+$(eval $(call KernelPackage,dsa-rtl8367d))
+
+
 define KernelPackage/dsa-ks8995
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Micrel/Kendin KS8995 Ethernet DSA Switch

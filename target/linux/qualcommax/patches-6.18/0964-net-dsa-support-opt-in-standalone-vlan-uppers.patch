@@ -1,0 +1,234 @@
+From: Fabiano Tassotti <fabianotassotti@gmail.com>
+Subject: [PATCH] net: dsa: support opt-in standalone VLAN uppers with 802.1Q tagging
+
+Allow an explicitly opted-in DSA switch to carry standalone VLAN upper
+traffic through a VLAN-based tagger when the hardware cannot preserve both
+a private source-port VID and the user VID. Keep the behavior disabled for
+all existing drivers and suppress Realtek FDB exhaustion only for switches
+which enable this compatibility path.
+
+Signed-off-by: Fabiano Tassotti <fabianotassotti@gmail.com>
+
+--- a/include/net/dsa.h
++++ b/include/net/dsa.h
+@@ -425,6 +425,12 @@
+ 	 */
+ 	u32			untag_vlan_aware_bridge_pvid:1;
+ 
++	/* Allow an opted-in 802.1Q tagger to resolve standalone VLAN uppers
++	 * from their user VID when the hardware cannot preserve a private
++	 * source-port VID at the same time.
++	 */
++	u32			tag_8021q_vlan_upper_rx:1;
++
+ 	/* Let DSA manage the FDB entries towards the
+ 	 * CPU, based on the software bridge database.
+ 	 */
+--- a/net/dsa/tag.h
++++ b/net/dsa/tag.h
+@@ -227,6 +227,37 @@
+ 	return NULL;
+ }
+ 
++static inline struct net_device *
++dsa_find_standalone_vlan_upper_by_vid(struct net_device *conduit, u16 vid)
++{
++	struct dsa_port *cpu_dp = conduit->dsa_ptr;
++	struct dsa_switch_tree *dst = cpu_dp->dst;
++	struct net_device *upper, *candidate = NULL;
++	struct list_head *iter;
++	struct dsa_port *dp;
++
++	list_for_each_entry(dp, &dst->ports, list) {
++		if (dp->type != DSA_PORT_TYPE_USER ||
++		    !dp->ds->tag_8021q_vlan_upper_rx || dp->bridge ||
++		    dp->cpu_dp != cpu_dp)
++			continue;
++
++		netdev_for_each_upper_dev_rcu(dp->user, upper, iter) {
++			if (!is_vlan_dev(upper) ||
++			    vlan_dev_vlan_proto(upper) != htons(ETH_P_8021Q) ||
++			    vlan_dev_vlan_id(upper) != vid)
++				continue;
++
++			if (candidate && candidate != dp->user)
++				return NULL;
++
++			candidate = dp->user;
++		}
++	}
++
++	return candidate;
++}
++
+ /* If the ingress port offloads the bridge, we mark the frame as autonomously
+  * forwarded by hardware, so the software bridge doesn't forward in twice, back
+  * to us, because we already did. However, if we're in fallback mode and we do
+--- a/net/dsa/tag_vsc73xx_8021q.c
++++ b/net/dsa/tag_vsc73xx_8021q.c
+@@ -12,20 +12,68 @@
+ vsc73xx_xmit(struct sk_buff *skb, struct net_device *netdev)
+ {
+ 	struct dsa_port *dp = dsa_user_to_port(netdev);
++	struct net_device *br;
+ 	u16 queue_mapping = skb_get_queue_mapping(skb);
+ 	u16 tx_vid = dsa_tag_8021q_standalone_vid(dp);
++	bool vlan_upper = false;
+ 	u8 pcp;
+ 
++	if (dp->ds->tag_8021q_vlan_upper_rx &&
++	    eth_type_vlan(skb_vlan_eth_hdr(skb)->h_vlan_proto)) {
++		u16 tci;
++
++		if (__skb_vlan_pop(skb, &tci))
++			return NULL;
++
++		tx_vid = tci & VLAN_VID_MASK;
++		vlan_upper = true;
++	}
++
++	if (dp->ds->tag_8021q_vlan_upper_rx &&
++	    skb->protocol == htons(ETH_P_8021Q)) {
++		struct vlan_ethhdr *hdr = skb_vlan_eth_hdr(skb);
++
++		tx_vid = ntohs(hdr->h_vlan_TCI) & VLAN_VID_MASK;
++		vlan_upper = true;
++
++		skb = skb_vlan_untag(skb);
++		if (!skb)
++			return NULL;
++
++		__vlan_hwaccel_clear_tag(skb);
++	}
++
++	if (dp->ds->tag_8021q_vlan_upper_rx && skb_vlan_tag_present(skb) &&
++	    skb->vlan_proto == htons(ETH_P_8021Q)) {
++		tx_vid = skb_vlan_tag_get_id(skb);
++		vlan_upper = true;
++		__vlan_hwaccel_clear_tag(skb);
++	}
++
+ 	if (skb->offload_fwd_mark) {
+ 		unsigned int bridge_num = dsa_port_bridge_num_get(dp);
+-		struct net_device *br = dsa_port_bridge_dev_get(dp);
++		br = dsa_port_bridge_dev_get(dp);
+ 
+-		if (br_vlan_enabled(br))
++		if (br_vlan_enabled(br) && !dp->ds->tag_8021q_vlan_upper_rx)
+ 			return skb;
+ 
+ 		tx_vid = dsa_tag_8021q_bridge_vid(bridge_num);
+ 	}
+ 
++	br = dsa_port_bridge_dev_get(dp);
++	if (br && br_vlan_enabled(br) && dp->ds->tag_8021q_vlan_upper_rx &&
++	    !vlan_upper) {
++		u16 pvid;
++		int err;
++
++		rcu_read_lock();
++		err = br_vlan_get_pvid_rcu(netdev, &pvid);
++		rcu_read_unlock();
++
++		if (!err)
++			tx_vid = pvid;
++	}
++
+ 	pcp = netdev_txq_to_tc(netdev, queue_mapping);
+ 
+ 	return dsa_8021q_xmit(skb, netdev, ETH_P_8021Q,
+@@ -35,12 +83,20 @@
+ static struct sk_buff *
+ vsc73xx_rcv(struct sk_buff *skb, struct net_device *netdev)
+ {
++	struct dsa_port *cpu_dp = netdev->dsa_ptr;
+ 	int src_port = -1, switch_id = -1, vbid = -1, vid = -1;
+ 
+ 	dsa_8021q_rcv(skb, &src_port, &switch_id, &vbid, &vid);
+ 
+ 	skb->dev = dsa_tag_8021q_find_user(netdev, src_port, switch_id,
+ 					   vid, vbid);
++	if (!skb->dev && cpu_dp->ds->tag_8021q_vlan_upper_rx)
++		skb->dev = dsa_find_designated_bridge_port_by_vid(netdev, vid);
++	if (!skb->dev && cpu_dp->ds->tag_8021q_vlan_upper_rx) {
++		skb->dev = dsa_find_standalone_vlan_upper_by_vid(netdev, vid);
++		if (skb->dev)
++			return skb;
++	}
+ 	if (!skb->dev) {
+ 		dev_warn_ratelimited(&netdev->dev,
+ 				     "Couldn't decode source port\n");
+--- a/net/dsa/user.c
++++ b/net/dsa/user.c
+@@ -19,6 +19,7 @@
+ #include <net/tc_act/tc_mirred.h>
+ #include <linux/if_bridge.h>
+ #include <linux/if_hsr.h>
++#include <linux/if_vlan.h>
+ #include <net/dcbnl.h>
+ #include <linux/netpoll.h>
+ #include <linux/string.h>
+@@ -2973,6 +2974,38 @@
+ }
+ EXPORT_SYMBOL_GPL(dsa_user_dev_check);
+ 
++static int
++dsa_user_tag_8021q_vlan_upper_change(struct net_device *dev,
++				     struct netdev_notifier_changeupper_info *info)
++{
++	struct dsa_port *dp = dsa_user_to_port(dev);
++	struct dsa_switch *ds = dp->ds;
++	u16 vid;
++	int err;
++
++	if (!ds->tag_8021q_vlan_upper_rx || !is_vlan_dev(info->upper_dev) ||
++	    vlan_dev_vlan_proto(info->upper_dev) != htons(ETH_P_8021Q) ||
++	    !ds->ops->tag_8021q_vlan_add || !ds->ops->tag_8021q_vlan_del ||
++	    !ds->tag_8021q_ctx)
++		return NOTIFY_DONE;
++
++	vid = vlan_dev_vlan_id(info->upper_dev);
++	if (!vid)
++		return NOTIFY_DONE;
++
++	if (info->linking)
++		err = ds->ops->tag_8021q_vlan_add(ds, dp->index, vid, 0);
++	else
++		err = ds->ops->tag_8021q_vlan_del(ds, dp->index, vid);
++
++	if (err)
++		netdev_err(dev, "failed to %s tag_8021q upper VLAN %u: %pe\n",
++			   info->linking ? "add" : "delete", vid,
++			   ERR_PTR(err));
++
++	return notifier_from_errno(err);
++}
++
+ static int dsa_user_changeupper(struct net_device *dev,
+ 				struct netdev_notifier_changeupper_info *info)
+ {
+@@ -3030,6 +3063,12 @@
+ 		}
+ 	}
+ 
++	if (err == NOTIFY_DONE || err == NOTIFY_OK) {
++		err = dsa_user_tag_8021q_vlan_upper_change(dev, info);
++		if (notifier_to_errno(err))
++			return err;
++	}
++
+ 	return err;
+ }
+ 
+--- a/drivers/net/dsa/realtek/rtl83xx.c
++++ b/drivers/net/dsa/realtek/rtl83xx.c
+@@ -583,6 +583,9 @@
+ 
+ 	mutex_unlock(&priv->l2_lock);
+ 
++	if (ret == -ENOSPC && ds->tag_8021q_vlan_upper_rx)
++		return 0;
++
+ 	if (ret)
+ 		dev_err(priv->dev, "fdb_add ERROR %pe\n", ERR_PTR(ret));
+ 	return ret;
