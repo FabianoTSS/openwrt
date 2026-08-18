@@ -312,7 +312,8 @@ define Device/mercusys_ipq50xx_mr80x_base
 		kmod-dsa-rtl8365mb \
 		kmod-leds-gpio \
 		qcom-mibib \
-		uboot-envtools
+		uboot-envtools \
+		usteer
 	# factory.itb: a "fw-type:Cloud" image (TP-Link/Mercusys's NVRAM-
 	# manager firmware container - see Build/tplink-cloud-sign and
 	# Build/nflash-partition-header in include/image-commands.mk for the
