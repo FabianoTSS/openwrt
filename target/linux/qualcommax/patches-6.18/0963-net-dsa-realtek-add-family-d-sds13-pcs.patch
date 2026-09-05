@@ -1,57 +1,101 @@
-From c91d3c98ba91b3d559a9ab28635e1d7797570de0 Mon Sep 17 00:00:00 2001
 From: Fabiano Tassotti <fabianotassotti@gmail.com>
-Date: Mon, 17 Aug 2026 23:51:41 +0200
-Subject: [PATCH] net: dsa: realtek: add family D SDS13 PCS support
+Subject: [PATCH] net: dsa: realtek: rework family D SDS13 PCS to actually pass traffic
 
-Extend the existing RTL8367S SGMII/HSGMII PCS implementation in this
-driver for family D switches, whose CPU-facing SerDes (referred to as
-"SDS13" in the vendor RTL8367D port API) is reached by redirecting the
-shared, unindexed SDS_INDACS window through the MAC6_SEL_SDS0 bit in
-RTL8365MB_SDS_MISC_REG, and whose SDS_MISC fields otherwise differ from
-family C.
+Family D's CPU-facing SerDes (SDS13) needs two things beyond basic PCS
+configuration to actually carry frames, not just to report link:
 
-The register sequence and tuning tables are derived from the GPL-licensed
-Realtek RTL8367D port API distributed in the Mercusys MR80X GPL release.
-Keep the existing family C path and the existing rtl8365mb_sds_write()/
-rtl8365mb_sds_read() helpers unchanged - family D reuses them as-is
-after the MAC6_SEL_SDS0 redirect, rather than introducing an indexed
-variant of the SDS_INDACS window. Select the new behavior from the
-driver's chip-family metadata, making the implementation reusable by
-other family D boards.
+1. MAC6_SEL_SDS0, the bit that redirects the shared SDS_INDACS window
+   to the family D SerDes instance, has to stay set through every
+   subsequent write to SDS_MISC, including the final one that programs
+   the PA enables and mode. A regmap_update_bits() mask that omits it
+   lets the redirect get silently cleared on the way out.
 
+2. The RTL8367S-VB receiver latches on a DISABLE -> HSGMII *edge* in
+   SDS_MISC, not on the value, and only once the SoC-side UNIPHY has
+   finished its own bring-up - empirically 3-25 seconds after boot,
+   well after pcs_config()/pcs_link_up() run. Indexed addressing alone
+   "lands" (PORT6_STATUS reads link=1/speed=2500M with the right index)
+   but still carries no frames without this. A capped delayed-work
+   loop, driven from mac_link_up(), redrives that edge and polls the
+   SerDes status register until the receiver reports link.
+
+This rework:
+
+- Restores explicit indexed SDS_INDACS addressing (rtl8365mb_sds_write()/
+  rtl8365mb_sds_read() take an index parameter throughout, family C
+  passing 0 and family D passing SDS13's index), the approach validated
+  on real hardware in commit b42847d2b4 (see
+  ai-memory/mr80x-v5-family-d-8021q-wan-dhcp-20260813.md for the
+  2026-08-13 WAN DHCP lease) - self-contained per transaction, rather
+  than relying on a redirect bit set once and assumed to hold.
+- Unifies rtl8365mb_pcs_config() into a single function for both chip
+  families, sharing the tuning-table-apply loop, SerDes reset, BMCR
+  reset and NWAY writes between family C and D.
+- Includes MAC6_SEL_SDS0 in the final SDS_MISC write's mask and value.
+- Adds the capped delayed-work re-latch loop described above.
+
+Both fixes were found on different IPQ5018+RTL8367S-VB hardware
+(TP-Link Archer AX55 v1) by Mieczyslaw Nalewaj (namiltd), krics and
+gabonpivovich-web, discussed at
+forum.openwrt.org/t/reduce-number-of-drivers-for-rtl8367s/237681
+(posts #117-152), and landed as namiltd/openwrt branch Realtek_DSA2
+(commit aae5c80e9d, co-developed with this author) plus GitHub PR
+namiltd/openwrt#142.
+
+Confirmed on real MR80X v5 hardware via TFTP RAM-boot: eth0's RX
+counter and a round-trip `ping -I wan` both show genuine bidirectional
+traffic, where the register sequence without these two fixes trained
+the same link and logged the same output but carried nothing. Full
+trail and sources in
+ai-memory/mr80x-v5-family-d-sds13-traffic-fix-20260904.md.
+
+Co-developed-by: Mieczyslaw Nalewaj <namiltd@yahoo.com>
+Signed-off-by: Mieczyslaw Nalewaj <namiltd@yahoo.com>
+Signed-off-by: krics <krics@localhost>
 Signed-off-by: Fabiano Tassotti <fabianotassotti@gmail.com>
 ---
- drivers/net/dsa/realtek/rtl8365mb_main.c | 114 ++++++++++++++++++++++-
- 1 file changed, 113 insertions(+), 1 deletion(-)
-
-diff --git a/drivers/net/dsa/realtek/rtl8365mb_main.c b/drivers/net/dsa/realtek/rtl8365mb_main.c
-index 3a956de..8eeee48 100644
 --- a/drivers/net/dsa/realtek/rtl8365mb_main.c
 +++ b/drivers/net/dsa/realtek/rtl8365mb_main.c
-@@ -317,6 +317,22 @@
+@@ -268,6 +268,7 @@
+ #define   RTL8365MB_SDS_INDACS_CMD_BUSY_MASK	0x0100
+ #define   RTL8365MB_SDS_INDACS_CMD_RUN_MASK	0x0080
+ #define   RTL8365MB_SDS_INDACS_CMD_WR_MASK	0x0040
++#define   RTL8365MB_SDS_INDACS_CMD_INDEX_MASK	GENMASK(5, 0)
+ #define RTL8365MB_SDS_INDACS_ADR_REG		0x6601
+ #define RTL8365MB_SDS_INDACS_DATA_REG		0x6602
+ 
+@@ -281,6 +282,11 @@
+ #define   RTL8365MB_SDS_MISC_SGMII_SPD_MASK		0x0180
+ #define   RTL8365MB_SDS_MISC_MAC8_SEL_SGMII_MASK	0x0040
+ 
++
++/* SerDes status register, reached through the SDS_INDACS window */
++#define RTL8365MB_D_SDS_REG_STATUS			0x3D
++#define   RTL8365MB_D_SDS_STATUS_LINK			0x0010
++
+ /* SerDes internal registers, accessed via the SDS_INDACS registers. The BMCR
+  * data path reset holds BMCR_ANENABLE | BMCR_ISOLATE while toggling the
+  * vendor-specific low bits from phase 1 to phase 2, which triggers a data path
+@@ -316,6 +322,18 @@
  #define   RTL8365MB_SDS_OPTION_ARM_KEY		0x0249
  #define RTL8365MB_SDS_OPTION_REG		0x13C1
  
-+/* Family D reaches its CPU-facing SerDes (called "SDS13" in the vendor
-+ * RTL8367D port API) through the same, unindexed SDS_INDACS window used
-+ * above. Setting MAC6_SEL_SDS0 here redirects that shared window to the
-+ * family-D SerDes instance instead of an index being passed to
-+ * rtl8365mb_sds_write()/rtl8365mb_sds_read() directly.
-+ */
++/* Family D uses the SDS13 indirect window for its MAC6 SerDes. */
++#define RTL8365MB_D_SDS_EXT0_INDEX			13
 +#define RTL8365MB_D_FIBER_CFG2_REG			0x13E8
 +#define   RTL8365MB_D_FIBER_CFG2_RX_DISABLE_MASK	GENMASK(7, 6)
 +#define   RTL8365MB_D_FIBER_CFG2_RX_DISABLE_SDS0	BIT(6)
-+#define RTL8365MB_D_SDS_MISC_PA33PC_EN		BIT(11)
-+#define RTL8365MB_D_SDS_MISC_PA12PC_EN		BIT(10)
++#define RTL8365MB_D_SDS_MISC_PA33PC_EN			BIT(11)
++#define RTL8365MB_D_SDS_MISC_PA12PC_EN			BIT(10)
 +#define RTL8365MB_D_SDS_MISC_MAC6_SEL_SDS0		BIT(9)
-+#define RTL8365MB_D_SDS_MISC_MODE_MASK		GENMASK(4, 0)
-+#define RTL8365MB_D_SDS_MISC_MODE_SGMII		0x02
++#define RTL8365MB_D_SDS_MISC_MODE_MASK			GENMASK(4, 0)
++#define RTL8365MB_D_SDS_MISC_MODE_SGMII			0x02
 +#define RTL8365MB_D_SDS_MISC_MODE_HSGMII		0x12
 +
  /* Embedded DW8051 microcontroller control registers. The microcontroller
   * can run firmware to manage the SerDes link, but this driver keeps it in
   * reset and disabled: phylink already performs the link management that
-@@ -690,6 +706,21 @@ static const struct rtl8365mb_jam_tbl_entry rtl8365mb_sds_jam_hsgmii[] = {
+@@ -706,6 +724,21 @@
  	{ 0x0424, 0xD810 }, { 0x0001, 0x0F80 }, { 0x002E, 0x83F2 },
  };
  
@@ -73,7 +117,53 @@ index 3a956de..8eeee48 100644
  enum rtl8365mb_phy_interface_mode {
  	RTL8365MB_PHY_INTERFACE_MODE_INVAL = 0,
  	RTL8365MB_PHY_INTERFACE_MODE_INTERNAL = BIT(0),
-@@ -1310,6 +1341,14 @@ static int rtl8365mb_sds_probe_option(struct realtek_priv *priv)
+@@ -919,6 +952,8 @@
+ 	struct rtl8365mb_port ports[RTL8365MB_MAX_NUM_PORTS];
+ 	struct phylink_pcs pcs;
+ 	bool sds_supported;
++	struct delayed_work sds_relatch;
++	unsigned int sds_relatch_tries;
+ };
+ 
+ enum rtl8365mb_family rtl8365mb_get_family(struct realtek_priv *priv)
+@@ -1254,7 +1289,8 @@
+ 	return 0;
+ }
+ 
+-static int rtl8365mb_sds_write(struct realtek_priv *priv, u16 addr, u16 data)
++static int rtl8365mb_sds_write(struct realtek_priv *priv, u8 index,
++			       u16 addr, u16 data)
+ {
+ 	int ret;
+ 
+@@ -1272,10 +1308,13 @@
+ 	 */
+ 	return regmap_write(priv->map, RTL8365MB_SDS_INDACS_CMD_REG,
+ 			    RTL8365MB_SDS_INDACS_CMD_RUN_MASK |
+-			    RTL8365MB_SDS_INDACS_CMD_WR_MASK);
++			    RTL8365MB_SDS_INDACS_CMD_WR_MASK |
++			    FIELD_PREP(RTL8365MB_SDS_INDACS_CMD_INDEX_MASK,
++				       index));
+ }
+ 
+-static int rtl8365mb_sds_read(struct realtek_priv *priv, u16 addr, u16 *data)
++static int rtl8365mb_sds_read(struct realtek_priv *priv, u8 index,
++			      u16 addr, u16 *data)
+ {
+ 	u32 val;
+ 	int ret;
+@@ -1285,7 +1324,9 @@
+ 		return ret;
+ 
+ 	ret = regmap_write(priv->map, RTL8365MB_SDS_INDACS_CMD_REG,
+-			   RTL8365MB_SDS_INDACS_CMD_RUN_MASK);
++			   RTL8365MB_SDS_INDACS_CMD_RUN_MASK |
++			   FIELD_PREP(RTL8365MB_SDS_INDACS_CMD_INDEX_MASK,
++				      index));
+ 	if (ret)
+ 		return ret;
+ 
+@@ -1325,6 +1366,14 @@
  	int ret;
  	int i;
  
@@ -88,80 +178,231 @@ index 3a956de..8eeee48 100644
  	/* Nothing to probe if no external interface is wired to the SerDes */
  	for (i = 0; i < RTL8365MB_MAX_NUM_EXTINTS; i++) {
  		extint = &mb->chip_info->extints[i];
-@@ -1346,6 +1385,62 @@ static int rtl8365mb_sds_probe_option(struct realtek_priv *priv)
- 	return 0;
- }
- 
-+/* RTL8367S-VB / family D SerDes PCS configuration. Redirects the shared,
-+ * unindexed SDS_INDACS window to the CPU-facing SerDes instance via
-+ * MAC6_SEL_SDS0 before applying the family-D tuning table, using the same
-+ * rtl8365mb_sds_write() helper as the family-C path below.
-+ */
-+static int rtl8365mb_d_pcs_config(struct realtek_priv *priv,
-+			       phy_interface_t interface)
-+{
+@@ -1403,28 +1452,47 @@
+ 				const unsigned long *advertising,
+ 				bool permit_pause_to_mac)
+ {
+-	const struct rtl8365mb_jam_tbl_entry *sds_jam;
+ 	const int id = RTL8365MB_SDS_EXT_INTERFACE_ID;
 +	const struct rtl8365mb_jam_tbl_entry *sds_jam;
-+	size_t sds_jam_size;
-+	u32 mode;
-+	int ret;
-+	int i;
+ 	struct rtl8365mb *mb = pcs_to_rtl8365mb(pcs);
+-	struct realtek_priv *priv;
++	struct realtek_priv *priv = mb->priv;
+ 	size_t sds_jam_size;
+-	u32 mode;
++	u32 misc_mask;
++	u32 misc_val;
++	u32 sds_mode;
++	u8 sds_index;
++	bool is_d;
+ 	u16 val;
+ 	int ret;
+ 	int i;
+ 
+-	priv = mb->priv;
++	is_d = rtl8365mb_get_family(priv) == RTL8365MB_FAMILY_D;
+ 
++	/* Select the appropriate tuning table and SDS mode */
+ 	if (interface == PHY_INTERFACE_MODE_2500BASEX) {
+-		sds_jam = rtl8365mb_sds_jam_hsgmii;
+-		sds_jam_size = ARRAY_SIZE(rtl8365mb_sds_jam_hsgmii);
+-		mode = RTL8365MB_EXT_PORT_MODE_HSGMII;
++		if (is_d) {
++			sds_jam = rtl8365mb_d_sds_jam_hsgmii;
++			sds_jam_size = ARRAY_SIZE(rtl8365mb_d_sds_jam_hsgmii);
++			sds_mode = RTL8365MB_D_SDS_MISC_MODE_HSGMII;
++		} else {
++			sds_jam = rtl8365mb_sds_jam_hsgmii;
++			sds_jam_size = ARRAY_SIZE(rtl8365mb_sds_jam_hsgmii);
++			sds_mode = RTL8365MB_EXT_PORT_MODE_HSGMII;
++		}
+ 	} else {
+-		sds_jam = rtl8365mb_sds_jam_sgmii;
+-		sds_jam_size = ARRAY_SIZE(rtl8365mb_sds_jam_sgmii);
+-		mode = RTL8365MB_EXT_PORT_MODE_SGMII;
++		if (is_d) {
++			sds_jam = rtl8365mb_d_sds_jam_sgmii;
++			sds_jam_size = ARRAY_SIZE(rtl8365mb_d_sds_jam_sgmii);
++			sds_mode = RTL8365MB_D_SDS_MISC_MODE_SGMII;
++		} else {
++			sds_jam = rtl8365mb_sds_jam_sgmii;
++			sds_jam_size = ARRAY_SIZE(rtl8365mb_sds_jam_sgmii);
++			sds_mode = RTL8365MB_EXT_PORT_MODE_SGMII;
++		}
+ 	}
+ 
++	sds_index = is_d ? RTL8365MB_D_SDS_EXT0_INDEX : 0;
 +
-+	if (interface == PHY_INTERFACE_MODE_2500BASEX) {
-+		sds_jam = rtl8365mb_d_sds_jam_hsgmii;
-+		sds_jam_size = ARRAY_SIZE(rtl8365mb_d_sds_jam_hsgmii);
-+		mode = RTL8365MB_D_SDS_MISC_MODE_HSGMII;
-+	} else {
-+		sds_jam = rtl8365mb_d_sds_jam_sgmii;
-+		sds_jam_size = ARRAY_SIZE(rtl8365mb_d_sds_jam_sgmii);
-+		mode = RTL8365MB_D_SDS_MISC_MODE_SGMII;
-+	}
-+
-+	ret = regmap_update_bits(priv->map, RTL8365MB_SDS_MISC_REG,
-+				 RTL8365MB_D_SDS_MISC_MAC6_SEL_SDS0,
-+				 RTL8365MB_D_SDS_MISC_MAC6_SEL_SDS0);
-+	if (ret)
-+		return ret;
-+
-+	for (i = 0; i < sds_jam_size; i++) {
-+		ret = rtl8365mb_sds_write(priv, sds_jam[i].reg,
-+					   sds_jam[i].val);
+ 	/* Hold the embedded DW8051 microcontroller in reset and keep it
+ 	 * disabled. The vendor driver loads firmware into it to manage the
+ 	 * SerDes link, but the firmware only duplicates work that phylink
+@@ -1451,36 +1519,92 @@
+ 	if (ret)
+ 		return ret;
+ 
++	/* Family D muxes the SerDes to MAC6 before tuning */
++	if (is_d) {
++		ret = regmap_update_bits(priv->map, RTL8365MB_SDS_MISC_REG,
++					 RTL8365MB_D_SDS_MISC_MAC6_SEL_SDS0,
++					 RTL8365MB_D_SDS_MISC_MAC6_SEL_SDS0);
 +		if (ret)
 +			return ret;
 +	}
 +
-+	ret = regmap_update_bits(priv->map, RTL8365MB_D_FIBER_CFG2_REG,
-+				 RTL8365MB_D_FIBER_CFG2_RX_DISABLE_MASK,
-+				 RTL8365MB_D_FIBER_CFG2_RX_DISABLE_SDS0);
-+	if (ret)
-+		return ret;
+ 	/* Tune the SerDes with vendor-prescribed parameters */
+ 	for (i = 0; i < sds_jam_size; i++) {
+-		ret = rtl8365mb_sds_write(priv, sds_jam[i].reg,
+-					  sds_jam[i].val);
++		ret = rtl8365mb_sds_write(priv, sds_index,
++					  sds_jam[i].reg, sds_jam[i].val);
++		if (ret)
++			return ret;
++	}
 +
-+	ret = regmap_update_bits(priv->map, RTL8365MB_SDS_MISC_REG,
-+				 RTL8365MB_D_SDS_MISC_PA33PC_EN |
-+				 RTL8365MB_D_SDS_MISC_PA12PC_EN |
-+				 RTL8365MB_D_SDS_MISC_MODE_MASK,
-+				 RTL8365MB_D_SDS_MISC_PA33PC_EN |
-+				 RTL8365MB_D_SDS_MISC_PA12PC_EN | mode);
-+	if (!ret)
-+		dev_info(priv->dev, "family D SerDes %s configured\n",
-+			 phy_modes(interface));
++	/* Family-specific post-tuning configuration */
++	if (is_d) {
++		ret = regmap_update_bits(priv->map, RTL8365MB_D_FIBER_CFG2_REG,
++					 RTL8365MB_D_FIBER_CFG2_RX_DISABLE_MASK,
++					 RTL8365MB_D_FIBER_CFG2_RX_DISABLE_SDS0);
+ 		if (ret)
+ 			return ret;
 +
-+	return ret;
-+}
-+
- /* The vendor driver raises the port 6 ingress and egress rate limiters to
-  * their maximum in its switch init, unconditionally for the whole chip
-  * family. The chip reset in rtl8365mb_setup() puts them back to their reset
-@@ -1436,6 +1531,9 @@ static int rtl8365mb_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
++		misc_mask = RTL8365MB_D_SDS_MISC_PA33PC_EN |
++			    RTL8365MB_D_SDS_MISC_PA12PC_EN |
++			    RTL8365MB_D_SDS_MISC_MODE_MASK |
++			    RTL8365MB_D_SDS_MISC_MAC6_SEL_SDS0;
++		misc_val  = RTL8365MB_D_SDS_MISC_PA33PC_EN |
++			    RTL8365MB_D_SDS_MISC_PA12PC_EN | sds_mode |
++			    RTL8365MB_D_SDS_MISC_MAC6_SEL_SDS0;
++	} else {
++		/* Mux the SerDes to MAC8 in the requested mode */
++		misc_mask = RTL8365MB_SDS_MISC_MAC8_SEL_SGMII_MASK |
++			    RTL8365MB_SDS_MISC_MAC8_SEL_HSGMII_MASK;
++		misc_val  = (sds_mode == RTL8365MB_EXT_PORT_MODE_SGMII) ?
++			    RTL8365MB_SDS_MISC_MAC8_SEL_SGMII_MASK :
++			    RTL8365MB_SDS_MISC_MAC8_SEL_HSGMII_MASK;
+ 	}
+ 
+-	/* Mux the SerDes to MAC8 in the requested mode */
+ 	ret = regmap_update_bits(priv->map, RTL8365MB_SDS_MISC_REG,
+-				 RTL8365MB_SDS_MISC_MAC8_SEL_SGMII_MASK |
+-					 RTL8365MB_SDS_MISC_MAC8_SEL_HSGMII_MASK,
+-				 mode == RTL8365MB_EXT_PORT_MODE_SGMII ?
+-					 RTL8365MB_SDS_MISC_MAC8_SEL_SGMII_MASK :
+-					 RTL8365MB_SDS_MISC_MAC8_SEL_HSGMII_MASK);
++				 misc_mask, misc_val);
  	if (ret)
  		return ret;
  
-+	if (rtl8365mb_get_family(priv) == RTL8365MB_FAMILY_D)
-+		return rtl8365mb_d_pcs_config(priv, interface);
+-	val = mode << RTL8365MB_DIGITAL_INTERFACE_SELECT_MODE_OFFSET(id);
+-	ret = regmap_update_bits(priv->map,
+-				 RTL8365MB_DIGITAL_INTERFACE_SELECT_REG(id),
+-				 RTL8365MB_DIGITAL_INTERFACE_SELECT_MODE_MASK(id),
+-				 val);
+-	if (ret)
+-		return ret;
++	/* The receiver latches on the DISABLE -> HSGMII edge rather than on
++	 * the value, so park the mode field first: regmap_update_bits() is a
++	 * no-op when the register already holds the target value.
++	 *
++	 * These are full writes rather than update_bits: misc_val carries
++	 * every field of SDS_MISC that matters here (the PA enables,
++	 * MAC6_SEL_SDS0 and the mode), and comes out as 0x0E12 - the same
++	 * value the stock firmware holds with the trunk up.
++	 */
++	if (is_d) {
++		u32 park = (misc_val & ~RTL8365MB_D_SDS_MISC_MODE_MASK) |
++			   RTL8365MB_D_PORT_SDS_MODE_DISABLE;
 +
- 	/* Tune the SerDes with vendor-prescribed parameters */
- 	for (i = 0; i < sds_jam_size; i++) {
- 		ret = rtl8365mb_sds_write(priv, sds_jam[i].reg,
-@@ -1542,6 +1640,13 @@ static void rtl8365mb_pcs_get_state(struct phylink_pcs *pcs,
++		ret = regmap_write(priv->map, RTL8365MB_SDS_MISC_REG, park);
++		if (ret)
++			return ret;
++
++		usleep_range(20000, 25000);
++
++		ret = regmap_write(priv->map, RTL8365MB_SDS_MISC_REG, misc_val);
++		if (ret)
++			return ret;
++
++	}
++
++	if (!is_d) {
++		val = sds_mode << RTL8365MB_DIGITAL_INTERFACE_SELECT_MODE_OFFSET(id);
++		ret = regmap_update_bits(priv->map,
++					 RTL8365MB_DIGITAL_INTERFACE_SELECT_REG(id),
++					 RTL8365MB_DIGITAL_INTERFACE_SELECT_MODE_MASK(id),
++					 val);
++		if (ret)
++			return ret;
++	}
+ 
+ 	/* Take the SerDes out of reset. The vendor driver does this only
+ 	 * after the SerDes mux and the interface mode are configured.
+ 	 */
+-	ret = rtl8365mb_sds_write(priv, RTL8365MB_SDS_REG_RESET,
++	ret = rtl8365mb_sds_write(priv, sds_index,
++				  RTL8365MB_SDS_REG_RESET,
+ 				  RTL8365MB_SDS_RESET_DEASSERT);
+ 	if (ret)
+ 		return ret;
+@@ -1490,12 +1614,14 @@
+ 	 * This flushes the FIFOs and ensures a clean state for the link,
+ 	 * preventing silent drops and CRC errors.
+ 	 */
+-	ret = rtl8365mb_sds_write(priv, RTL8365MB_SDS_REG_BMCR,
++	ret = rtl8365mb_sds_write(priv, sds_index,
++				  RTL8365MB_SDS_REG_BMCR,
+ 				  RTL8365MB_SDS_BMCR_DPRST_PHASE1);
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = rtl8365mb_sds_write(priv, RTL8365MB_SDS_REG_BMCR,
++	ret = rtl8365mb_sds_write(priv, sds_index,
++				  RTL8365MB_SDS_REG_BMCR,
+ 				  RTL8365MB_SDS_BMCR_DPRST_PHASE2);
+ 	if (ret)
+ 		return ret;
+@@ -1516,14 +1642,16 @@
+ 	/* Keep SGMII in-band autonegotiation disabled: the link parameters are
+ 	 * forced from rtl8365mb_pcs_link_up() instead.
+ 	 */
+-	ret = rtl8365mb_sds_read(priv, RTL8365MB_SDS_REG_NWAY, &val);
++	ret = rtl8365mb_sds_read(priv, sds_index,
++				 RTL8365MB_SDS_REG_NWAY, &val);
+ 	if (ret)
+ 		return ret;
+ 
+ 	val &= ~RTL8365MB_SDS_NWAY_EN_MASK;
+ 	val |= RTL8365MB_SDS_NWAY_RESTART_MASK;
+ 
+-	return rtl8365mb_sds_write(priv, RTL8365MB_SDS_REG_NWAY, val);
++	return rtl8365mb_sds_write(priv, sds_index,
++				   RTL8365MB_SDS_REG_NWAY, val);
+ }
+ 
+ static bool rtl8365mb_interface_is_serdes(phy_interface_t interface)
+@@ -1548,6 +1676,7 @@
+ {
+ 	struct rtl8365mb *mb = pcs_to_rtl8365mb(pcs);
+ 	struct realtek_priv *priv = mb->priv;
++	u8 sds_index = 0;
+ 	u16 status;
+ 	u32 val;
+ 	int ret;
+@@ -1559,7 +1688,11 @@
+ 	 * rtl8365mb_pcs_config()), so the link status register can be read
+ 	 * directly through the SDS_INDACS window without racing the auto-poll.
+ 	 */
+-	ret = rtl8365mb_sds_read(priv, RTL8365MB_SDS_REG_LINK_STATUS, &status);
++	if (rtl8365mb_get_family(priv) == RTL8365MB_FAMILY_D)
++		sds_index = RTL8365MB_D_SDS_EXT0_INDEX;
++
++	ret = rtl8365mb_sds_read(priv, sds_index,
++				 RTL8365MB_SDS_REG_LINK_STATUS, &status);
+ 	if (ret) {
+ 		state->link = false;
+ 		return;
+@@ -1570,6 +1703,13 @@
  	if (!state->link)
  		return;
  
@@ -175,12 +416,16 @@ index 3a956de..8eeee48 100644
  	/* The speed and duplex are forced; read them back from the values
  	 * programmed into the SerDes MISC register.
  	 */
-@@ -1583,6 +1688,12 @@ static void rtl8365mb_pcs_link_up(struct phylink_pcs *pcs,
+@@ -1611,6 +1751,16 @@
  	u32 r_speed;
  	int ret;
  
 +	/* Family D forces the external MAC ability from mac_link_up(); its
 +	 * SDS_MISC fields do not share the family C link-force layout.
++	 *
++	 * The SerDes re-latch cannot be driven from here either: this runs
++	 * about a millisecond before phylink reports the link, and the edge
++	 * does not take that early. Kick off the retry work instead.
 +	 */
 +	if (rtl8365mb_get_family(priv) == RTL8365MB_FAMILY_D)
 +		return;
@@ -188,7 +433,29 @@ index 3a956de..8eeee48 100644
  	/* The speed field has no value for 2.5 Gbps: the rate is determined by
  	 * the HSGMII SerDes configuration, and the vendor driver programs the
  	 * 1 Gbps value here.
-@@ -1897,7 +2008,8 @@ static void rtl8365mb_phylink_mac_link_up(struct phylink_config *config,
+@@ -1915,6 +2065,21 @@
+ 			return;
+ 		}
+ 
++		/* The work sleeps inside the sequence, so stop an attempt
++		 * still in flight before re-arming. Only a genuinely new
++		 * link event resets the budget: re-arming mid-attempt would
++		 * let a flapping link defeat the retry cap entirely, and the
++		 * attempt itself parks the mode for 20 ms, which can be what
++		 * makes the link flap in the first place.
++		 */
++		if (rtl8365mb_interface_is_serdes(interface) &&
++		    rtl8365mb_get_family(priv) == RTL8365MB_FAMILY_D) {
++			if (!cancel_delayed_work_sync(&mb->sds_relatch))
++				mb->sds_relatch_tries = 0;
++
++			schedule_delayed_work(&mb->sds_relatch, 0);
++		}
++
+ 		/* The SerDes has its own pause enables; program them from
+ 		 * the resolved pause modes, as the vendor driver does when
+ 		 * forcing the link on a SerDes external interface. These
+@@ -1926,7 +2091,8 @@
  		 * rtl8365mb_pcs_link_up() because pcs_link_up() carries no
  		 * pause information.
  		 */
@@ -198,3 +465,86 @@ index 3a956de..8eeee48 100644
  			u32 val = 0;
  
  			if (tx_pause)
+@@ -3168,6 +3334,60 @@
+ 	return 0;
+ }
+ 
++/* The family D receiver latches on a DISABLE -> HSGMII edge rather than on
++ * the value in SDS_MISC, and only once the UNIPHY on the SoC side has
++ * finished its own bring-up. Both pcs_config() and pcs_link_up() run before
++ * that point, so the edge is redone from here until the receiver reports
++ * link, or until we give up.
++ */
++#define RTL8365MB_D_SDS_RELATCH_TRIES		15
++#define RTL8365MB_D_SDS_RELATCH_INTERVAL_MS	2000
++
++static void rtl8365mb_sds_relatch_work(struct work_struct *work)
++{
++	struct rtl8365mb *mb = container_of(to_delayed_work(work),
++					    struct rtl8365mb, sds_relatch);
++	struct realtek_priv *priv = mb->priv;
++	u32 park, target;
++	u16 status = 0;
++
++	if (regmap_read(priv->map, RTL8365MB_SDS_MISC_REG, &target))
++		return;
++
++	/* pcs_config() has not run yet: nothing to re-latch. */
++	if ((target & RTL8365MB_D_SDS_MISC_MODE_MASK) ==
++	    RTL8365MB_D_PORT_SDS_MODE_DISABLE)
++		goto again;
++
++	park = (target & ~RTL8365MB_D_SDS_MISC_MODE_MASK) |
++	       RTL8365MB_D_PORT_SDS_MODE_DISABLE;
++
++	regmap_write(priv->map, RTL8365MB_SDS_MISC_REG, park);
++	msleep(20);
++	regmap_write(priv->map, RTL8365MB_SDS_MISC_REG, target);
++	msleep(200);
++
++	if (rtl8365mb_sds_read(priv, RTL8365MB_D_SDS_EXT0_INDEX,
++			       RTL8365MB_D_SDS_REG_STATUS, &status))
++		return;
++
++	if (status & RTL8365MB_D_SDS_STATUS_LINK) {
++		dev_dbg(priv->dev, "SerDes latched after %u attempt(s)\n",
++			mb->sds_relatch_tries + 1);
++		return;
++	}
++
++again:
++	if (++mb->sds_relatch_tries >= RTL8365MB_D_SDS_RELATCH_TRIES) {
++		dev_warn(priv->dev,
++			 "SerDes did not latch, trunk will stay down\n");
++		return;
++	}
++
++	schedule_delayed_work(&mb->sds_relatch,
++			      msecs_to_jiffies(RTL8365MB_D_SDS_RELATCH_INTERVAL_MS));
++}
++
+ static int rtl8365mb_setup(struct dsa_switch *ds)
+ {
+ 	struct realtek_priv *priv = ds->priv;
+@@ -3189,6 +3409,10 @@
+ 	 */
+ 	mb->pcs.poll = true;
+ 
++	if (rtl8365mb_get_family(priv) == RTL8365MB_FAMILY_D)
++		INIT_DELAYED_WORK(&mb->sds_relatch,
++				  rtl8365mb_sds_relatch_work);
++
+ 	ret = rtl8365mb_reset_chip(priv);
+ 	if (ret) {
+ 		dev_err(priv->dev, "failed to reset chip: %pe\n",
+@@ -3373,6 +3597,10 @@
+ static void rtl8365mb_teardown(struct dsa_switch *ds)
+ {
+ 	struct realtek_priv *priv = ds->priv;
++	struct rtl8365mb *mb = priv->chip_data;
++
++	if (rtl8365mb_get_family(priv) == RTL8365MB_FAMILY_D)
++		cancel_delayed_work_sync(&mb->sds_relatch);
+ 
+ 	rtl8365mb_stats_teardown(priv);
+ 	rtl8365mb_irq_teardown(priv);
