@@ -1,0 +1,12 @@
+#!/bin/sh
+# On boards with a slow-probing external switch (e.g. the RTL8367S-VB
+# family D chip reset + SDS13 bring-up), /etc/rc.d/S96led can run before
+# the "netdev" LED trigger actually latches onto the target interface,
+# leaving WAN/LAN activity LEDs stuck on their power-on default instead
+# of tracking real link/traffic. Re-applying the LED config once an
+# interface actually comes up is enough to fix it; this is a no-op on
+# boards where S96led already got it right at boot.
+
+[ "$ACTION" = "ifup" ] || exit 0
+
+/etc/init.d/led start
